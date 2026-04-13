@@ -1,0 +1,117 @@
+# Configurazione centralizzata del sistema Black Point Roma.
+# Tutti i parametri numerici, le soglie e i pesi del modello vivono qui.
+# Gli script della pipeline (src/s00..s06) leggono questo file tramite
+# src.config.carica_config().
+
+# ---------------------------------------------------------------------------
+# Periodo di analisi
+# ---------------------------------------------------------------------------
+periodo_analisi:
+  anno_inizio: 2017
+  anno_fine: 2021
+  # Annualita' estese usate solo per analisi di sensibilita'.
+  anno_inizio_esteso: 2010
+  anno_fine_esteso: 2021
+
+# ---------------------------------------------------------------------------
+# Sistemi di riferimento
+# ---------------------------------------------------------------------------
+crs:
+  # CRS metrico usato per tutti i calcoli geometrici (distanze, buffer).
+  metrico: "EPSG:32633"   # UTM zona 33N
+  # CRS geografico usato per la visualizzazione finale.
+  visualizzazione: "EPSG:4326"  # WGS84
+
+# ---------------------------------------------------------------------------
+# Percorsi dei dati (relativi alla radice del repo)
+# ---------------------------------------------------------------------------
+paths:
+  raw:
+    incidenti: "data/raw/incidenti.csv"
+    rete_tomtom: "data/raw/rete_tomtom.gpkg"
+    rete_pgtu: "data/raw/rete_pgtu.gpkg"
+    semafori: "data/raw/semafori.gpkg"
+  interim:
+    incidenti_clean: "data/interim/incidenti_clean.gpkg"
+    rete_tomtom_prep: "data/interim/rete_tomtom_prep.gpkg"
+    intersezioni: "data/interim/intersezioni.gpkg"
+    segmenti: "data/interim/segmenti.gpkg"
+    incidenti_matched: "data/interim/incidenti_matched.gpkg"
+  processed:
+    spf_models: "data/processed/spf_models.pkl"
+    eb_results: "data/processed/eb_results.parquet"
+    priorita_finale: "data/processed/priorita_finale.gpkg"
+
+# ---------------------------------------------------------------------------
+# Fase 1 - Matching spaziale incidenti <-> rete
+# ---------------------------------------------------------------------------
+matching:
+  # Raggio del buffer attorno ai nodi-intersezione (metri).
+  raggio_intersezione: 20
+  # Distanza massima oltre la quale un incidente viene assegnato per pura
+  # vicinanza geometrica al segmento piu' vicino (metri).
+  soglia_snap_geometrica: 50
+  # Distanza massima entro cui si tenta il match toponomastico (metri).
+  soglia_snap_toponomastica: 100
+  # Variazione massima del TGM tra archetti consecutivi per appartenere
+  # allo stesso segmento omogeneo.
+  soglia_variazione_tgm_segmento: 0.30
+  # Lunghezze min/max per i segmenti omogenei (metri).
+  lunghezza_min_segmento: 100
+  lunghezza_max_segmento: 2000
+  # Distanza massima entro cui un semaforo viene associato a un nodo
+  # come "intersezione semaforizzata" (metri).
+  raggio_associazione_semaforo: 20
+
+# ---------------------------------------------------------------------------
+# Fase 2 - Safety Performance Functions
+# ---------------------------------------------------------------------------
+spf:
+  modello_segmenti: "NB2"     # binomiale negativa
+  modello_intersezioni: "NB2"
+  covariate_segmenti_base: ["log_TGM", "log_L"]
+  covariate_segmenti_estese: ["log_TGM", "log_L", "V85", "IQR_norm"]
+  covariate_intersezioni_base: ["log_flusso_entrante"]
+  covariate_intersezioni_estese: ["log_flusso_entrante", "n_bracci"]
+  # Numero minimo di siti per categoria sotto cui si accorpano le categorie.
+  min_siti_per_categoria: 50
+
+# ---------------------------------------------------------------------------
+# Fase 3 - Empirical Bayes ed EPDO
+# ---------------------------------------------------------------------------
+eb:
+  # Eventuali parametri di calcolo EB (placeholder per estensioni future).
+  intervallo_confidenza: 0.95
+
+epdo:
+  # Pesi EPDO basati sui costi sociali MEF/ISTAT (vedi Task 3.2 del piano).
+  pesi:
+    mortale: 167
+    ferito_grave: 24
+    ferito_lieve: 2
+    solo_danni: 1
+  # Costo sociale medio per incidente equivalente "solo danni" (euro).
+  costo_unitario_eur: 9000
+
+# ---------------------------------------------------------------------------
+# Fase 4 - Indice composito di priorita'
+# ---------------------------------------------------------------------------
+indice_composito:
+  pesi:
+    eccesso_eb: 0.40
+    severita: 0.25
+    vulnerabilita: 0.20
+    rischio_velocita: 0.15
+  # Percentili usati per la normalizzazione robusta delle componenti.
+  percentile_min: 1
+  percentile_max: 99
+
+classificazione:
+  # Soglie percentili per le 5 fasce di priorita' (Task 4.2).
+  # < 20 monitoraggio, 20-40 bassa, 40-60 media, 60-80 alta, > 80 altissima.
+  soglie_percentili: [20, 40, 60, 80]
+
+# ---------------------------------------------------------------------------
+# Riproducibilita'
+# ---------------------------------------------------------------------------
+random_seed: 42
