@@ -56,6 +56,9 @@ data/processed/*
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+# I CSV degli incidenti grezzi sono versionati esplicitamente.
+!data/raw/incidenti/
+!data/raw/incidenti/*.csv
 
 # --- Output dashboard / report ---
 dashboard/assets/generated/
