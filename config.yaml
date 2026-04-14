@@ -32,13 +32,12 @@ crs:
 # ---------------------------------------------------------------------------
 paths:
   raw:
-    # Directory che contiene i CSV degli incidenti (Incidenti_1_parteN.csv,
-    # Incidenti_2.csv). Tutti i file vengono caricati, etichettati e uniti.
+    # Directory che contiene i CSV degli incidenti. Tutti i file che
+    # rispettano il glob vengono caricati, etichettati e uniti.
+    # La deduplica avviene su id_incidente con priorita' definita nel loader
+    # (i file piu' recenti/ri-geolocalizzati hanno priorita' piu' alta).
     incidenti_dir: "data/raw/incidenti"
-    # Pattern dei file "pre-2022" (geocodifica affidabile, agganciata a rete).
-    incidenti_pre2022_glob: "Incidenti_1_parte*.csv"
-    # File "post-2022" (geocodifica presente ma da ri-agganciare alla rete).
-    incidenti_post2022: "Incidenti_2.csv"
+    incidenti_glob: "Incidenti_*.csv"
     rete_tomtom: "data/raw/rete_tomtom.gpkg"
     rete_pgtu: "data/raw/rete_pgtu.gpkg"
     semafori: "data/raw/semafori.gpkg"
