@@ -1,23 +1,33 @@
 """Step 00 - Pulizia del database incidenti (Fase 0, Task 0.1).
 
-Importa il dataset grezzo degli incidenti (file ``Incidenti_1_parte*.csv`` e
-``Incidenti_2.csv``), standardizza i campi (coordinate, gravita', data/ora,
-toponomastica), calcola i flag di affidabilita' della geocodifica e salva un
-GeoPackage unico.
+Importa tutti i CSV degli incidenti presenti nella directory configurata,
+deduplica su ``id_incidente`` (``idprotocollo``) tenendo la versione di
+provenienza piu' autorevole, standardizza i campi (coordinate, gravita',
+data/ora, toponomastica), calcola i flag di qualita' e salva un GeoPackage
+unico.
 
-Convenzioni dei file di input (schema osservato dai CSV del Comune di Roma):
-- ``Incidenti_1_parte*.csv`` contengono gli incidenti storici
-  geolocalizzati dal 2008 al 2021, agganciati alla rete (campi ``idta1``,
-  ``idmnet1`` popolati).
-- ``Incidenti_2.csv`` contiene gli incidenti 2024+, geolocalizzati ma non
-  ancora agganciati alla rete: vengono flaggati ``da_rigeolocalizzare``.
+Convenzioni sui file di input (schema osservato dai CSV del Comune di Roma):
+- ``Incidenti_1_parte*.csv``: dataset storico 2004-2022 (parzialmente
+  agganciato alla rete tramite ``idta1`` / ``idmnet1``).
+- ``Incidenti_2.csv``: estratto intermedio 2024-2025 non agganciato alla rete.
+- ``Incidenti_2022.csv``, ``Incidenti_2023.csv``, ``Incidenti_2024.csv``:
+  ri-geolocalizzazioni piu' recenti per le singole annualita'; hanno
+  priorita' su tutti gli altri file in caso di duplicato.
 
-Le coordinate sono nel sistema italiano Gauss-Boaga zona 2
-(``EPSG:3004``) e vengono riproiettate al CRS metrico di lavoro configurato
-in ``config.yaml`` (default UTM zona 33N, ``EPSG:32633``).
+Deduplica:
+- La stessa ``idprotocollo`` puo' comparire in piu' file (tipicamente tra
+  ``Incidenti_1`` e la ri-geolocalizzazione annuale). Teniamo la versione
+  con priorita' piu' alta secondo la mappa :data:`PRIORITA_SOURCE`.
 
-Le note testuali (``note_semaforo``, ``danni_a_cose``) sono preservate per
-consentire debug e interpretazione manuale dei casi dubbi.
+Coordinate: nel sistema italiano Gauss-Boaga zona 2 (``EPSG:3004``),
+riproiettate al CRS metrico di lavoro (default ``EPSG:32633`` UTM33N).
+
+Flag ``da_rigeolocalizzare``: calcolato dinamicamente come ``id_ta1 is null``
+(cioe' "geolocalizzato ma non ancora agganciato alla rete TomTom"). Verra'
+usato nelle fasi successive per capire quali incidenti richiedono un passo
+di aggancio supplementare.
+
+Le note testuali (``note_semaforo``, ``danni_a_cose``) sono preservate.
 """
 
 from __future__ import annotations
@@ -243,8 +253,26 @@ def normalizza_nome_strada(valore: Any) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Caricamento
+# Caricamento e deduplica
 # ---------------------------------------------------------------------------
+
+# Priorita' per la deduplica su ``id_incidente``: il file con priorita' piu'
+# alta vince in caso di duplicato. I file per singola annualita'
+# (Incidenti_2022/23/24) sono le ri-geolocalizzazioni piu' recenti e
+# sovrascrivono sia il dataset storico ``Incidenti_1_parte*`` sia l'estratto
+# intermedio ``Incidenti_2``.
+PRIORITA_SOURCE: dict[str, int] = {
+    "Incidenti_2024.csv": 3,
+    "Incidenti_2023.csv": 3,
+    "Incidenti_2022.csv": 3,
+    "Incidenti_2.csv": 2,
+    # Default (Incidenti_1_parte*.csv): 1.
+}
+PRIORITA_DEFAULT = 1
+
+
+def _priorita_source(nome_file: str) -> int:
+    return PRIORITA_SOURCE.get(nome_file, PRIORITA_DEFAULT)
 
 
 def _leggi_csv(percorso: Path) -> pd.DataFrame:
@@ -261,12 +289,54 @@ def _leggi_csv(percorso: Path) -> pd.DataFrame:
     )
 
 
-def carica_incidenti_grezzi(config: dict[str, Any]) -> pd.DataFrame:
-    """Carica tutti i CSV degli incidenti e li concatena in un unico DataFrame.
+def _deduplica(df: pd.DataFrame, colonna_id: str = "idprotocollo") -> pd.DataFrame:
+    """Rimuove duplicati su ``colonna_id`` tenendo la sorgente con priorita' piu' alta.
 
-    Aggiunge due colonne di tracciabilita':
-    - ``source_file``: nome del file di provenienza
-    - ``da_rigeolocalizzare``: ``True`` per i record di ``Incidenti_2.csv``
+    Se due righe hanno la stessa ``idprotocollo``, viene conservata quella
+    con ``priorita_dedup`` massima. A parita' di priorita' viene conservata
+    la prima (ordinamento stabile).
+    """
+    if colonna_id not in df.columns:
+        raise KeyError(f"Colonna di deduplica mancante: {colonna_id}")
+
+    df_ordinato = df.sort_values(
+        "priorita_dedup", ascending=False, kind="stable"
+    )
+    n_prima = len(df_ordinato)
+    df_dedup = df_ordinato.drop_duplicates(subset=colonna_id, keep="first")
+    n_dopo = len(df_dedup)
+    n_rimossi = n_prima - n_dopo
+    if n_rimossi:
+        ripartizione = (
+            df_ordinato[df_ordinato.duplicated(subset=colonna_id, keep="first")]
+            .groupby("source_file")
+            .size()
+            .to_dict()
+        )
+        log.info(
+            "Deduplica %s: %d -> %d (%d duplicati rimossi, ripartizione per file: %s)",
+            colonna_id,
+            n_prima,
+            n_dopo,
+            n_rimossi,
+            ripartizione,
+        )
+    else:
+        log.info("Deduplica %s: nessun duplicato trovato", colonna_id)
+
+    return df_dedup.drop(columns="priorita_dedup").reset_index(drop=True)
+
+
+def carica_incidenti_grezzi(config: dict[str, Any]) -> pd.DataFrame:
+    """Carica tutti i CSV degli incidenti, li concatena e deduplica per id.
+
+    Aggiunge colonne di tracciabilita':
+    - ``source_file``: nome del file di provenienza della riga superstite
+    - ``priorita_dedup``: priorita' della sorgente (usata per la deduplica
+      e poi rimossa)
+
+    La deduplica avviene su ``idprotocollo`` prima della standardizzazione
+    per evitare di sprecare lavoro sulle righe che verranno scartate.
     """
 
     paths_cfg = config["paths"]["raw"]
@@ -274,32 +344,24 @@ def carica_incidenti_grezzi(config: dict[str, Any]) -> pd.DataFrame:
     if not directory.is_dir():
         raise FileNotFoundError(f"Directory incidenti non trovata: {directory}")
 
-    pattern_pre = str(directory / paths_cfg["incidenti_pre2022_glob"])
-    file_pre2022 = sorted(glob.glob(pattern_pre))
-    file_post2022 = directory / paths_cfg["incidenti_post2022"]
-
-    if not file_pre2022:
-        raise FileNotFoundError(
-            f"Nessun file pre-2022 trovato con pattern {pattern_pre}"
-        )
+    pattern = str(directory / paths_cfg["incidenti_glob"])
+    file_csv = sorted(glob.glob(pattern))
+    if not file_csv:
+        raise FileNotFoundError(f"Nessun CSV incidenti trovato con pattern {pattern}")
 
     frame_dfs: list[pd.DataFrame] = []
-    for percorso in file_pre2022:
+    for percorso in file_csv:
         df = _leggi_csv(Path(percorso))
-        df["source_file"] = os.path.basename(percorso)
-        df["da_rigeolocalizzare"] = False
+        nome = os.path.basename(percorso)
+        df["source_file"] = nome
+        df["priorita_dedup"] = _priorita_source(nome)
         frame_dfs.append(df)
-
-    if file_post2022.is_file():
-        df = _leggi_csv(file_post2022)
-        df["source_file"] = file_post2022.name
-        df["da_rigeolocalizzare"] = True
-        frame_dfs.append(df)
-    else:
-        log.warning("File post-2022 non trovato: %s", file_post2022)
 
     df_tot = pd.concat(frame_dfs, ignore_index=True)
     log.info("Totale righe grezze caricate: %d", len(df_tot))
+
+    df_tot = _deduplica(df_tot, colonna_id="idprotocollo")
+    log.info("Totale righe dopo deduplica: %d", len(df_tot))
     return df_tot
 
 
@@ -316,6 +378,8 @@ def standardizza_colonne(df: pd.DataFrame) -> pd.DataFrame:
     - Normalizza i nomi di strada
     - Converte ``confermato`` e ``ok`` in booleani
     - Converte ``danni_a_cose_yn`` in booleano
+    - Calcola ``da_rigeolocalizzare`` = ``id_ta1`` nullo (cioe' incidente
+      geolocalizzato ma non ancora agganciato alla rete TomTom).
     """
 
     df = df.rename(columns=MAPPATURA_COLONNE).copy()
@@ -349,6 +413,13 @@ def standardizza_colonne(df: pd.DataFrame) -> pd.DataFrame:
     for col in ("strada1", "strada2", "strada12", "strada02"):
         if col in df.columns:
             df[col] = df[col].map(normalizza_nome_strada)
+
+    # Flag dinamico: un incidente e' "da rigeolocalizzare" quando ha
+    # coordinate ma manca l'aggancio alla rete TomTom (id_ta1 nullo).
+    if "id_ta1" in df.columns:
+        df["da_rigeolocalizzare"] = df["id_ta1"].isna()
+    else:
+        df["da_rigeolocalizzare"] = False
 
     return df
 

@@ -6,6 +6,8 @@ import pandas as pd
 import pytest
 
 from src.s00_pulizia_incidenti import (
+    _deduplica,
+    _priorita_source,
     calcola_flag_qualita,
     classifica_gravita,
     filtra_periodo,
@@ -175,3 +177,86 @@ def test_standardizza_colonne_rinomina_e_casta():
     assert df["ok"].iloc[1] is False or df["ok"].iloc[1] == False  # noqa: E712
     assert df["strada1"].iloc[0] == "Via Tiberina"
     assert df["strada1"].iloc[1] == "Viale di Trastevere"
+
+
+# ---------------------------------------------------------------------------
+# Deduplica per priorita' della sorgente
+# ---------------------------------------------------------------------------
+
+
+def test_priorita_source_mappa_file_noti():
+    assert _priorita_source("Incidenti_2024.csv") == 3
+    assert _priorita_source("Incidenti_2023.csv") == 3
+    assert _priorita_source("Incidenti_2022.csv") == 3
+    assert _priorita_source("Incidenti_2.csv") == 2
+    assert _priorita_source("Incidenti_1_parte1.csv") == 1
+    assert _priorita_source("File_sconosciuto.csv") == 1
+
+
+def test_deduplica_tiene_priorita_piu_alta():
+    df = pd.DataFrame(
+        {
+            "idprotocollo": ["A", "A", "B", "C", "C"],
+            "source_file": [
+                "Incidenti_1_parte1.csv",
+                "Incidenti_2024.csv",
+                "Incidenti_1_parte1.csv",
+                "Incidenti_2.csv",
+                "Incidenti_2024.csv",
+            ],
+            "priorita_dedup": [1, 3, 1, 2, 3],
+            "payload": ["vecchio", "nuovo", "unico", "vecchio", "nuovo"],
+        }
+    )
+    risultato = _deduplica(df)
+    assert len(risultato) == 3
+    # A: deve restare la riga "nuovo" (priorita 3)
+    assert risultato.loc[risultato["idprotocollo"] == "A", "payload"].iloc[0] == "nuovo"
+    # B: una sola occorrenza, rimane "unico"
+    assert risultato.loc[risultato["idprotocollo"] == "B", "payload"].iloc[0] == "unico"
+    # C: deve restare la riga "nuovo" (priorita 3)
+    assert risultato.loc[risultato["idprotocollo"] == "C", "payload"].iloc[0] == "nuovo"
+    # priorita_dedup deve essere stata rimossa
+    assert "priorita_dedup" not in risultato.columns
+
+
+def test_deduplica_no_duplicati_ritorna_tutto():
+    df = pd.DataFrame(
+        {
+            "idprotocollo": ["A", "B", "C"],
+            "source_file": ["f1.csv", "f1.csv", "f1.csv"],
+            "priorita_dedup": [1, 1, 1],
+        }
+    )
+    risultato = _deduplica(df)
+    assert len(risultato) == 3
+
+
+# ---------------------------------------------------------------------------
+# da_rigeolocalizzare dinamico
+# ---------------------------------------------------------------------------
+
+
+def test_da_rigeolocalizzare_da_id_ta1():
+    df_grezzo = pd.DataFrame(
+        {
+            "idprotocollo": ["A", "B", "C"],
+            "dataoraincidente": ["2020-01-01", "2020-01-01", "2020-01-01"],
+            "anno": ["2020", "2020", "2020"],
+            "num_morti": ["0", "0", "0"],
+            "num_feriti": ["0", "0", "0"],
+            "num_riservata": ["0", "0", "0"],
+            "num_illesi": ["0", "0", "0"],
+            "num_veicoli": ["1", "1", "1"],
+            "x": ["1.0", "1.0", "1.0"],
+            "y": ["1.0", "1.0", "1.0"],
+            "ok": ["t", "t", "t"],
+            "approx": [None, None, None],
+            "idta1": ["12345", None, "9999"],
+            "confermato": ["1", "1", "1"],
+            "danniacoseyn": ["0", "0", "0"],
+            "dataconferma": ["2020-02-01", "2020-02-01", "2020-02-01"],
+        }
+    )
+    df = standardizza_colonne(df_grezzo)
+    assert df["da_rigeolocalizzare"].tolist() == [False, True, False]
