@@ -6,12 +6,15 @@
 # ---------------------------------------------------------------------------
 # Periodo di analisi
 # ---------------------------------------------------------------------------
+# Per ora nessun filtro temporale: usiamo tutti gli anni disponibili.
+# Quando i dati post-2022 saranno ri-geolocalizzati e agganciati alla rete
+# si potra' restringere il periodo principale (es. 2017-2021).
 periodo_analisi:
-  anno_inizio: 2017
-  anno_fine: 2021
-  # Annualita' estese usate solo per analisi di sensibilita'.
+  anno_inizio: null
+  anno_fine: null
+  # Annualita' estese usate per analisi di sensibilita'.
   anno_inizio_esteso: 2010
-  anno_fine_esteso: 2021
+  anno_fine_esteso: 2024
 
 # ---------------------------------------------------------------------------
 # Sistemi di riferimento
@@ -21,13 +24,21 @@ crs:
   metrico: "EPSG:32633"   # UTM zona 33N
   # CRS geografico usato per la visualizzazione finale.
   visualizzazione: "EPSG:4326"  # WGS84
+  # CRS originale dei file Incidenti_*.csv (Gauss-Boaga Italia zona 2).
+  dato_incidenti: "EPSG:3004"
 
 # ---------------------------------------------------------------------------
 # Percorsi dei dati (relativi alla radice del repo)
 # ---------------------------------------------------------------------------
 paths:
   raw:
-    incidenti: "data/raw/incidenti.csv"
+    # Directory che contiene i CSV degli incidenti (Incidenti_1_parteN.csv,
+    # Incidenti_2.csv). Tutti i file vengono caricati, etichettati e uniti.
+    incidenti_dir: "data/raw/incidenti"
+    # Pattern dei file "pre-2022" (geocodifica affidabile, agganciata a rete).
+    incidenti_pre2022_glob: "Incidenti_1_parte*.csv"
+    # File "post-2022" (geocodifica presente ma da ri-agganciare alla rete).
+    incidenti_post2022: "Incidenti_2.csv"
     rete_tomtom: "data/raw/rete_tomtom.gpkg"
     rete_pgtu: "data/raw/rete_pgtu.gpkg"
     semafori: "data/raw/semafori.gpkg"
