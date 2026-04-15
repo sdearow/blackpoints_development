@@ -39,7 +39,11 @@ paths:
     incidenti_dir: "data/raw/incidenti"
     incidenti_glob: "Incidenti_*.csv"
     rete_tomtom: "data/raw/rete_tomtom.gpkg"
-    rete_pgtu: "data/raw/rete_pgtu.gpkg"
+    # Grafo PGTU 2026 pubblicato dal Comune di Roma (GeoJSON in EPSG:4326).
+    # Contiene classifica funzionale (S/IQ/IZ/Q), grande viabilita' e
+    # trasporto pubblico locale, che in s01_preparazione_rete vengono
+    # joinati spazialmente sugli archi TomTom.
+    rete_pgtu: "data/raw/2a.PGTU_Grafo_2026.geojson"
     semafori: "data/raw/semafori.gpkg"
   interim:
     incidenti_clean: "data/interim/incidenti_clean.gpkg"
@@ -72,6 +76,12 @@ matching:
   # Distanza massima entro cui un semaforo viene associato a un nodo
   # come "intersezione semaforizzata" (metri).
   raggio_associazione_semaforo: 20
+  # Distanza massima (metri, CRS metrico) entro cui il midpoint di un arco
+  # TomTom viene associato a un arco del grafo PGTU 2026 per ereditarne la
+  # classifica funzionale, il flag di grande viabilita' e il flag TPL.
+  # Oltre questa soglia l'arco TomTom resta senza classificazione PGTU
+  # (tipicamente strade locali non riportate nel grafo PGTU).
+  raggio_associazione_pgtu: 15
 
 # ---------------------------------------------------------------------------
 # Fase 2 - Safety Performance Functions
