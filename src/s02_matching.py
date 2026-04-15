@@ -436,6 +436,422 @@ def salva_intersezioni(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Segmentazione omogenea (Task 1.1b)
+# ---------------------------------------------------------------------------
+
+
+def _norm_topo(toponimo: Any) -> str | None:
+    """Normalizza il toponimo per il confronto in segmentazione.
+
+    Usa ``normalizza_nome_strada`` di s00 (capitalizzazione standard) e
+    ulteriormente normalizza spazi multipli, trattini/virgole come
+    separatori e converte in minuscolo per il confronto.
+    """
+    from src.s00_pulizia_incidenti import normalizza_nome_strada
+
+    norm = normalizza_nome_strada(toponimo)
+    if norm is None:
+        return None
+    s = norm.lower()
+    s = s.replace(",", " ").replace("-", " ")
+    s = " ".join(s.split())
+    return s if s else None
+
+
+def _costruisci_indice_archi(
+    gdf_rete: gpd.GeoDataFrame,
+    df_archi_nodi: pd.DataFrame,
+    df_nodi: pd.DataFrame,
+) -> dict[str, Any]:
+    """Costruisce gli indici utili alla segmentazione.
+
+    Restituisce un dizionario con:
+    - ``arco_endpoints``: ``id_arco -> (id_nodo_start, id_nodo_end)``
+    - ``arco_topo``: ``id_arco -> toponimo normalizzato (str o None)``
+    - ``arco_tgm``: ``id_arco -> tgm (float)``
+    - ``arco_lung``: ``id_arco -> lunghezza_m (float)``
+    - ``nodo_grado``: ``id_nodo -> n_archi``
+    - ``nodo_archi``: ``id_nodo -> list[id_arco]``
+    """
+    arco_endpoints = {
+        int(r.id_arco): (int(r.id_nodo_start), int(r.id_nodo_end))
+        for r in df_archi_nodi.itertuples(index=False)
+    }
+    nodo_grado = {
+        int(r.id_nodo): int(r.n_archi) for r in df_nodi.itertuples(index=False)
+    }
+
+    arco_topo: dict[int, str | None] = {}
+    arco_tgm: dict[int, float] = {}
+    arco_lung: dict[int, float] = {}
+    for r in gdf_rete[["id_arco", "toponimo", "tgm", "lunghezza_m"]].itertuples(
+        index=False
+    ):
+        ida = int(r.id_arco)
+        arco_topo[ida] = _norm_topo(r.toponimo)
+        arco_tgm[ida] = float(r.tgm) if r.tgm is not None and not pd.isna(r.tgm) else 0.0
+        arco_lung[ida] = (
+            float(r.lunghezza_m)
+            if r.lunghezza_m is not None and not pd.isna(r.lunghezza_m)
+            else 0.0
+        )
+
+    nodo_archi: dict[int, list[int]] = {}
+    for ida, (a, b) in arco_endpoints.items():
+        nodo_archi.setdefault(a, []).append(ida)
+        nodo_archi.setdefault(b, []).append(ida)
+
+    return {
+        "arco_endpoints": arco_endpoints,
+        "arco_topo": arco_topo,
+        "arco_tgm": arco_tgm,
+        "arco_lung": arco_lung,
+        "nodo_grado": nodo_grado,
+        "nodo_archi": nodo_archi,
+    }
+
+
+def _costruisci_catene(
+    indice: dict[str, Any],
+    soglia_var_tgm: float,
+) -> list[list[int]]:
+    """Costruisce le catene massimali di archi mergiabili.
+
+    Una catena e' una sequenza ordinata di archi consecutivi tali che:
+    - i nodi interni hanno grado esattamente 2 (non intersezioni);
+    - tutti gli archi hanno lo stesso ``toponimo`` normalizzato;
+    - la variazione relativa di ``tgm`` tra due archi consecutivi e'
+      ``<= soglia_var_tgm`` (se entrambi i tgm sono > 0; altrimenti il
+      controllo viene saltato).
+
+    L'algoritmo parte da ogni arco non ancora visitato, lo estende prima
+    in avanti e poi all'indietro fino a che una di queste condizioni
+    fallisce. Le catene risultanti sono disgiunte e coprono tutti gli
+    archi.
+    """
+    arco_endpoints = indice["arco_endpoints"]
+    arco_topo = indice["arco_topo"]
+    arco_tgm = indice["arco_tgm"]
+    nodo_grado = indice["nodo_grado"]
+    nodo_archi = indice["nodo_archi"]
+
+    def _passabile(arco_corr: int, nodo: int) -> int | None:
+        """Restituisce l'arco successivo attraverso ``nodo``, o None."""
+        if nodo_grado.get(nodo, 0) != 2:
+            return None
+        candidati = [a for a in nodo_archi[nodo] if a != arco_corr]
+        if len(candidati) != 1:
+            return None
+        prossimo = candidati[0]
+        if arco_topo[prossimo] is None or arco_topo[arco_corr] is None:
+            return None
+        if arco_topo[prossimo] != arco_topo[arco_corr]:
+            return None
+        tgm_a = arco_tgm[arco_corr]
+        tgm_b = arco_tgm[prossimo]
+        if tgm_a > 0 and tgm_b > 0:
+            base = max(tgm_a, tgm_b)
+            if abs(tgm_a - tgm_b) / base > soglia_var_tgm:
+                return None
+        return prossimo
+
+    visitati: set[int] = set()
+    catene: list[list[int]] = []
+
+    for id_arco in arco_endpoints:
+        if id_arco in visitati:
+            continue
+        catena = [id_arco]
+        visitati.add(id_arco)
+
+        # Estensione in avanti (lato 'end').
+        prev = id_arco
+        nodo_avanti = arco_endpoints[id_arco][1]
+        while True:
+            nxt = _passabile(prev, nodo_avanti)
+            if nxt is None or nxt in visitati:
+                break
+            visitati.add(nxt)
+            catena.append(nxt)
+            ns, ne = arco_endpoints[nxt]
+            nodo_avanti = ne if ns == nodo_avanti else ns
+            prev = nxt
+
+        # Estensione all'indietro (lato 'start').
+        prev = id_arco
+        nodo_indietro = arco_endpoints[id_arco][0]
+        while True:
+            nxt = _passabile(prev, nodo_indietro)
+            if nxt is None or nxt in visitati:
+                break
+            visitati.add(nxt)
+            catena.insert(0, nxt)
+            ns, ne = arco_endpoints[nxt]
+            nodo_indietro = ne if ns == nodo_indietro else ns
+            prev = nxt
+
+        catene.append(catena)
+
+    return catene
+
+
+def _spezza_per_lunghezza(
+    catene: list[list[int]],
+    arco_lung: dict[int, float],
+    lung_max: float,
+) -> list[list[int]]:
+    """Spezza ogni catena in segmenti di lunghezza ``<= lung_max``.
+
+    Se anche il singolo arco supera ``lung_max`` lo si lascia da solo
+    (non spezziamo a meta' di un arco TomTom).
+    """
+    out: list[list[int]] = []
+    for catena in catene:
+        seg: list[int] = []
+        l_seg = 0.0
+        for ida in catena:
+            l = arco_lung.get(ida, 0.0)
+            if seg and l_seg + l > lung_max:
+                out.append(seg)
+                seg = []
+                l_seg = 0.0
+            seg.append(ida)
+            l_seg += l
+        if seg:
+            out.append(seg)
+    return out
+
+
+def _estremi_catena(
+    catena: list[int],
+    arco_endpoints: dict[int, tuple[int, int]],
+) -> tuple[int, int]:
+    """Restituisce ``(id_nodo_start, id_nodo_end)`` di una catena ordinata."""
+    if len(catena) == 1:
+        return arco_endpoints[catena[0]]
+    a0, a1 = catena[0], catena[1]
+    s0, e0 = arco_endpoints[a0]
+    s1, e1 = arco_endpoints[a1]
+    # Il nodo condiviso e' quello "interno" tra a0 e a1: quindi il nodo
+    # esterno di a0 e' quello che NON sta in a1.
+    if s0 in (s1, e1):
+        nodo_start = e0
+    else:
+        nodo_start = s0
+
+    aN, aM = catena[-1], catena[-2]
+    sN, eN = arco_endpoints[aN]
+    sM, eM = arco_endpoints[aM]
+    if sN in (sM, eM):
+        nodo_end = eN
+    else:
+        nodo_end = sN
+    return nodo_start, nodo_end
+
+
+def _media_pesata(valori: np.ndarray, pesi: np.ndarray) -> float:
+    """Media pesata robusta a NaN nei valori (i pesi associati vengono ignorati)."""
+    mask = ~np.isnan(valori) & (pesi > 0)
+    if not mask.any():
+        return float("nan")
+    return float(np.average(valori[mask], weights=pesi[mask]))
+
+
+def _moda_categoriale(serie: pd.Series) -> Any:
+    """Moda di una serie categoriale; ``None`` se vuota o tutti nulli."""
+    s = serie.dropna()
+    if s.empty:
+        return None
+    return s.mode().iloc[0]
+
+
+def costruisci_segmenti(
+    gdf_rete: gpd.GeoDataFrame,
+    df_archi_nodi: pd.DataFrame,
+    df_nodi: pd.DataFrame,
+    soglia_var_tgm: float = 0.30,
+    lung_min: float = 100.0,
+    lung_max: float = 2000.0,
+) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
+    """Costruisce i segmenti omogenei della rete (Task 1.1b).
+
+    Algoritmo:
+
+    1. Indicizza archi e nodi.
+    2. Costruisce le catene massimali di archi consecutivi che condividono
+       toponimo e che hanno variazione di TGM ``<= soglia_var_tgm``,
+       interrompendole a tutte le intersezioni (nodi di grado >= 3).
+    3. Spezza le catene troppo lunghe in segmenti di lunghezza
+       ``<= lung_max``.
+    4. Per ogni segmento aggrega gli attributi degli archi (medie pesate
+       per lunghezza per le grandezze numeriche, moda per le categoriali)
+       e marca come ``isolato`` i segmenti con lunghezza ``< lung_min``.
+
+    Restituisce:
+    - ``gdf_segmenti``: GeoDataFrame dei segmenti con geometria
+      ``MultiLineString`` (semplice unione delle geometrie degli archi
+      del segmento).
+    - ``df_arco_segmento``: mapping ``id_arco -> id_segmento``.
+    """
+    log.info(
+        "Segmentazione: %d archi, soglia_var_tgm=%.2f, lung_min=%.0f, lung_max=%.0f",
+        len(gdf_rete),
+        soglia_var_tgm,
+        lung_min,
+        lung_max,
+    )
+    indice = _costruisci_indice_archi(gdf_rete, df_archi_nodi, df_nodi)
+    catene = _costruisci_catene(indice, soglia_var_tgm=soglia_var_tgm)
+    log.info("Catene massimali costruite: %d", len(catene))
+    segmenti = _spezza_per_lunghezza(catene, indice["arco_lung"], lung_max=lung_max)
+    log.info("Segmenti dopo split per lunghezza max: %d", len(segmenti))
+
+    # Indici di lookup per attributi degli archi.
+    rete_idx = gdf_rete.set_index("id_arco")
+
+    arco_endpoints = indice["arco_endpoints"]
+    nodo_grado = indice["nodo_grado"]
+
+    record_seg: list[dict[str, Any]] = []
+    geometrie: list[Any] = []
+    record_map: list[tuple[int, int]] = []
+
+    for id_segmento, catena in enumerate(segmenti):
+        sub = rete_idx.loc[catena]
+        lunghezza_tot = float(sub["lunghezza_m"].fillna(0).sum())
+        pesi = sub["lunghezza_m"].fillna(0).to_numpy(dtype=float)
+        tgm_medio = _media_pesata(sub["tgm"].to_numpy(dtype=float), pesi)
+        v85_medio = (
+            _media_pesata(sub["v_85"].to_numpy(dtype=float), pesi)
+            if "v_85" in sub.columns
+            else float("nan")
+        )
+        limite_medio = (
+            _media_pesata(sub["limite_velocita"].to_numpy(dtype=float), pesi)
+            if "limite_velocita" in sub.columns
+            else float("nan")
+        )
+        eccesso_medio = (
+            _media_pesata(sub["eccesso_v85"].to_numpy(dtype=float), pesi)
+            if "eccesso_v85" in sub.columns
+            else float("nan")
+        )
+        iqr_medio = (
+            _media_pesata(sub["iqr_norm"].to_numpy(dtype=float), pesi)
+            if "iqr_norm" in sub.columns
+            else float("nan")
+        )
+
+        toponimo_visualizzato = _moda_categoriale(sub["toponimo"]) if "toponimo" in sub.columns else None
+        classe_frc = _moda_categoriale(sub["classe_frc"]) if "classe_frc" in sub.columns else None
+        pgtu_classifica = (
+            _moda_categoriale(sub["pgtu_classifica"]) if "pgtu_classifica" in sub.columns else None
+        )
+        pgtu_tpl = (
+            bool(sub["pgtu_tpl"].fillna(0).astype(bool).any())
+            if "pgtu_tpl" in sub.columns
+            else False
+        )
+        grande_viab = (
+            bool(sub["grande_viabilita"].fillna(0).astype(bool).any())
+            if "grande_viabilita" in sub.columns
+            else False
+        )
+        linea_atac = (
+            bool(sub["linea_atac"].fillna(False).astype(bool).any())
+            if "linea_atac" in sub.columns
+            else False
+        )
+
+        nodo_start, nodo_end = _estremi_catena(catena, arco_endpoints)
+        grado_start = int(nodo_grado.get(nodo_start, 0))
+        grado_end = int(nodo_grado.get(nodo_end, 0))
+
+        # Geometria: unione delle geometrie degli archi del segmento.
+        geom_seg = sub.geometry.union_all()
+        geometrie.append(geom_seg)
+
+        record_seg.append(
+            {
+                "id_segmento": id_segmento,
+                "toponimo": toponimo_visualizzato,
+                "n_archi": int(len(catena)),
+                "lunghezza_m": lunghezza_tot,
+                "tgm_medio": tgm_medio,
+                "v85_medio": v85_medio,
+                "limite_velocita_medio": limite_medio,
+                "eccesso_v85_medio": eccesso_medio,
+                "iqr_norm_medio": iqr_medio,
+                "classe_frc": classe_frc,
+                "pgtu_classifica": pgtu_classifica,
+                "pgtu_tpl": pgtu_tpl,
+                "grande_viabilita": grande_viab,
+                "linea_atac": linea_atac,
+                "id_nodo_start": int(nodo_start),
+                "id_nodo_end": int(nodo_end),
+                "grado_start": grado_start,
+                "grado_end": grado_end,
+                "isolato": bool(lunghezza_tot < lung_min),
+                "archi": [int(a) for a in catena],
+            }
+        )
+
+        for ida in catena:
+            record_map.append((int(ida), id_segmento))
+
+    gdf_segmenti = gpd.GeoDataFrame(
+        record_seg, geometry=geometrie, crs=gdf_rete.crs
+    )
+    df_arco_segmento = pd.DataFrame.from_records(
+        record_map, columns=["id_arco", "id_segmento"]
+    )
+    log.info(
+        "Segmenti finali: %d (di cui %d isolati < %.0f m)",
+        len(gdf_segmenti),
+        int(gdf_segmenti["isolato"].sum()),
+        lung_min,
+    )
+    return gdf_segmenti, df_arco_segmento
+
+
+def riassumi_segmenti(gdf: gpd.GeoDataFrame) -> dict[str, Any]:
+    """Riassunto descrittivo del dataset dei segmenti."""
+    if len(gdf) == 0:
+        return {"n_segmenti": 0}
+    lunghezze = gdf["lunghezza_m"].astype(float)
+    return {
+        "n_segmenti": int(len(gdf)),
+        "n_isolati": int(gdf["isolato"].sum()) if "isolato" in gdf.columns else 0,
+        "lunghezza_totale_km": float(lunghezze.sum() / 1000.0),
+        "lunghezza_mediana_m": float(lunghezze.median()),
+        "lunghezza_p10_m": float(lunghezze.quantile(0.10)),
+        "lunghezza_p90_m": float(lunghezze.quantile(0.90)),
+        "lunghezza_max_m": float(lunghezze.max()),
+        "n_archi_per_segmento_mediana": float(gdf["n_archi"].median()),
+    }
+
+
+def salva_segmenti(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
+    """Salva il GeoDataFrame dei segmenti in GeoPackage.
+
+    La colonna ``archi`` (lista di int) viene serializzata come stringa
+    ``|``-separata, analogamente alle intersezioni.
+    """
+    percorso.parent.mkdir(parents=True, exist_ok=True)
+    if percorso.exists():
+        percorso.unlink()
+
+    gdf_out = gdf.copy()
+    if "archi" in gdf_out.columns:
+        gdf_out["archi"] = gdf_out["archi"].apply(
+            lambda lst: "|".join(str(x) for x in lst) if isinstance(lst, list) else ""
+        )
+
+    log.info("Salvataggio segmenti: %s (%d record)", percorso, len(gdf_out))
+    gdf_out.to_file(percorso, driver="GPKG", layer="segmenti")
+
+
+# ---------------------------------------------------------------------------
 # Pipeline principale
 # ---------------------------------------------------------------------------
 
@@ -470,9 +886,16 @@ def main(config: dict[str, Any]) -> None:
     tolleranza_nodo = float(
         config.get("matching", {}).get("tolleranza_nodo", 0.5)
     )
-    gdf_intersezioni, _df_archi_nodi = estrai_intersezioni(
+    gdf_intersezioni, df_archi_nodi = estrai_intersezioni(
         gdf_rete, tolleranza_m=tolleranza_nodo
     )
+
+    # Per la segmentazione servono anche tutti i nodi (non solo le
+    # intersezioni). Le ricalcoliamo dal df_endpoint usando la stessa
+    # tolleranza: e' un calcolo veloce e mantiene il modulo
+    # ``costruisci_segmenti`` indipendente dalla forma di ``gdf_intersezioni``.
+    df_ep = estrai_endpoint_archi(gdf_rete)
+    df_nodi_tutti, _ = costruisci_nodi(df_ep, tolleranza_m=tolleranza_nodo)
 
     # Associazione semafori.
     raggio_sem = float(config["matching"]["raggio_associazione_semaforo"])
@@ -480,16 +903,40 @@ def main(config: dict[str, Any]) -> None:
         gdf_intersezioni, gdf_semafori, raggio_m=raggio_sem
     )
 
-    # Riassunto.
+    # Riassunto intersezioni.
     riassunto = riassumi_intersezioni(gdf_intersezioni)
     log.info("Riassunto intersezioni:")
     for chiave, valore in riassunto.items():
         log.info("  %s: %s", chiave, valore)
 
-    # Salvataggio.
-    out_rel = config["paths"]["interim"]["intersezioni"]
-    out_path = RADICE_PROGETTO / out_rel
-    salva_intersezioni(gdf_intersezioni, out_path)
+    # Salvataggio intersezioni.
+    out_int_rel = config["paths"]["interim"]["intersezioni"]
+    out_int_path = RADICE_PROGETTO / out_int_rel
+    salva_intersezioni(gdf_intersezioni, out_int_path)
+
+    # Segmentazione omogenea (Task 1.1b).
+    soglia_var_tgm = float(config["matching"]["soglia_variazione_tgm_segmento"])
+    lung_min = float(config["matching"]["lunghezza_min_segmento"])
+    lung_max = float(config["matching"]["lunghezza_max_segmento"])
+    gdf_segmenti, _df_arco_segmento = costruisci_segmenti(
+        gdf_rete,
+        df_archi_nodi=df_archi_nodi,
+        df_nodi=df_nodi_tutti,
+        soglia_var_tgm=soglia_var_tgm,
+        lung_min=lung_min,
+        lung_max=lung_max,
+    )
+
+    # Riassunto segmenti.
+    riassunto_seg = riassumi_segmenti(gdf_segmenti)
+    log.info("Riassunto segmenti:")
+    for chiave, valore in riassunto_seg.items():
+        log.info("  %s: %s", chiave, valore)
+
+    # Salvataggio segmenti.
+    out_seg_rel = config["paths"]["interim"]["segmenti"]
+    out_seg_path = RADICE_PROGETTO / out_seg_rel
+    salva_segmenti(gdf_segmenti, out_seg_path)
 
 
 if __name__ == "__main__":

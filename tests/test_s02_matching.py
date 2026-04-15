@@ -10,11 +10,14 @@ from shapely.geometry import LineString, MultiLineString, Point
 
 from src.s02_matching import (
     _endpoint_linea,
+    _norm_topo,
     associa_semafori,
     costruisci_nodi,
+    costruisci_segmenti,
     estrai_endpoint_archi,
     estrai_intersezioni,
     riassumi_intersezioni,
+    riassumi_segmenti,
 )
 
 
@@ -277,6 +280,217 @@ def test_associa_semafori_riproietta_automaticamente():
 
 # ---------------------------------------------------------------------------
 # riassumi_intersezioni
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _norm_topo
+# ---------------------------------------------------------------------------
+
+
+def test_norm_topo_normalizza_case_e_spazi():
+    assert _norm_topo("Via dei Fori Imperiali") == "via dei fori imperiali"
+    assert _norm_topo("VIA   DEI  FORI") == "via dei fori"
+    assert _norm_topo("Via, dei-Fori") == "via dei fori"
+
+
+def test_norm_topo_none_su_vuoto():
+    assert _norm_topo(None) is None
+    assert _norm_topo("") is None
+    assert _norm_topo("   ") is None
+
+
+# ---------------------------------------------------------------------------
+# costruisci_segmenti
+# ---------------------------------------------------------------------------
+
+
+def _gdf_strada_dritta_3_archi() -> gpd.GeoDataFrame:
+    """Tre archi collineari, stesso toponimo, stesso TGM (3x100 m)."""
+    return gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2, 3], dtype="Int64"),
+            "toponimo": ["Via Dritta", "Via Dritta", "Via Dritta"],
+            "tgm": [1000.0, 1000.0, 1000.0],
+            "lunghezza_m": [100.0, 100.0, 100.0],
+            "classe_frc": [4, 4, 4],
+            "limite_velocita": [50.0, 50.0, 50.0],
+            "v_85": [55.0, 55.0, 55.0],
+            "eccesso_v85": [5.0, 5.0, 5.0],
+            "iqr_norm": [0.1, 0.1, 0.1],
+            "pgtu_classifica": ["IQ", "IQ", "IQ"],
+            "pgtu_tpl": [0.0, 0.0, 0.0],
+            "grande_viabilita": [0.0, 0.0, 0.0],
+            "linea_atac": [False, False, False],
+        },
+        geometry=[
+            LineString([(0, 0), (100, 0)]),
+            LineString([(100, 0), (200, 0)]),
+            LineString([(200, 0), (300, 0)]),
+        ],
+        crs="EPSG:32633",
+    )
+
+
+def test_costruisci_segmenti_strada_dritta_un_solo_segmento():
+    gdf = _gdf_strada_dritta_3_archi()
+    _, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+
+    gdf_seg, df_arco_seg = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi, soglia_var_tgm=0.30, lung_min=100, lung_max=2000
+    )
+    assert len(gdf_seg) == 1
+    seg = gdf_seg.iloc[0]
+    assert seg["n_archi"] == 3
+    assert seg["lunghezza_m"] == pytest.approx(300.0)
+    assert seg["isolato"] is False or bool(seg["isolato"]) is False
+    assert sorted(seg["archi"]) == [1, 2, 3]
+    # Mapping arco -> segmento copre tutti gli archi.
+    assert len(df_arco_seg) == 3
+    assert set(df_arco_seg["id_segmento"]) == {0}
+
+
+def test_costruisci_segmenti_si_spezza_a_intersezione():
+    """Rete a T: la strada principale (2 archi) viene tagliata
+    dall'uscita laterale al nodo (100, 0), generando 2 segmenti
+    + 1 segmento di un solo arco per la laterale."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2, 3], dtype="Int64"),
+            "toponimo": ["Via Principale", "Via Principale", "Via Laterale"],
+            "tgm": [1000.0, 1000.0, 500.0],
+            "lunghezza_m": [100.0, 100.0, 100.0],
+        },
+        geometry=[
+            LineString([(0, 0), (100, 0)]),
+            LineString([(100, 0), (200, 0)]),
+            LineString([(100, 0), (100, 100)]),
+        ],
+        crs="EPSG:32633",
+    )
+    _, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi, soglia_var_tgm=0.30, lung_min=100, lung_max=2000
+    )
+    # 3 archi, 3 segmenti (l'intersezione spezza la principale e la laterale e' isolata).
+    assert len(gdf_seg) == 3
+    n_archi_per_seg = sorted(gdf_seg["n_archi"].tolist())
+    assert n_archi_per_seg == [1, 1, 1]
+
+
+def test_costruisci_segmenti_si_spezza_per_variazione_tgm():
+    """Tre archi collineari ma il TGM passa da 1000 a 2000 (variazione 100%)
+    sopra soglia 30%: il segmento si spezza tra l'arco 1 e l'arco 2."""
+    gdf = _gdf_strada_dritta_3_archi()
+    gdf["tgm"] = [1000.0, 2000.0, 2000.0]
+    _, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi, soglia_var_tgm=0.30, lung_min=100, lung_max=2000
+    )
+    # 2 segmenti: {1} e {2,3}.
+    assert len(gdf_seg) == 2
+    n_archi = sorted(gdf_seg["n_archi"].tolist())
+    assert n_archi == [1, 2]
+
+
+def test_costruisci_segmenti_marca_isolato_sotto_lung_min():
+    """Un solo arco da 50 m: deve risultare 1 segmento marcato come isolato."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1], dtype="Int64"),
+            "toponimo": ["Via Corta"],
+            "tgm": [500.0],
+            "lunghezza_m": [50.0],
+        },
+        geometry=[LineString([(0, 0), (50, 0)])],
+        crs="EPSG:32633",
+    )
+    _, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi, soglia_var_tgm=0.30, lung_min=100, lung_max=2000
+    )
+    assert len(gdf_seg) == 1
+    assert bool(gdf_seg.iloc[0]["isolato"]) is True
+
+
+def test_costruisci_segmenti_si_spezza_per_lunghezza_max():
+    """5 archi da 600 m con lung_max=1000 m devono dare 3 segmenti
+    (600+600 > 1000, quindi spezza ogni 1 arco se serve)."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2, 3, 4, 5], dtype="Int64"),
+            "toponimo": ["Via Lunga"] * 5,
+            "tgm": [1000.0] * 5,
+            "lunghezza_m": [600.0] * 5,
+        },
+        geometry=[
+            LineString([(i * 600, 0), ((i + 1) * 600, 0)]) for i in range(5)
+        ],
+        crs="EPSG:32633",
+    )
+    _, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi, soglia_var_tgm=0.30, lung_min=100, lung_max=1000
+    )
+    # Greedy: [1] (600), poi 600+600>1000 ⇒ nuovo seg [2], poi [3], [4], [5].
+    # Quindi ogni arco va da solo: 5 segmenti da 600 m.
+    assert len(gdf_seg) == 5
+    assert all(s == 600.0 for s in gdf_seg["lunghezza_m"])
+
+
+def test_costruisci_segmenti_toponimo_diverso_separa():
+    """Due archi consecutivi con toponimo diverso non vengono uniti."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2], dtype="Int64"),
+            "toponimo": ["Via A", "Via B"],
+            "tgm": [1000.0, 1000.0],
+            "lunghezza_m": [200.0, 200.0],
+        },
+        geometry=[
+            LineString([(0, 0), (200, 0)]),
+            LineString([(200, 0), (400, 0)]),
+        ],
+        crs="EPSG:32633",
+    )
+    _, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi, soglia_var_tgm=0.30, lung_min=100, lung_max=2000
+    )
+    assert len(gdf_seg) == 2
+
+
+# ---------------------------------------------------------------------------
+# riassumi_segmenti
+# ---------------------------------------------------------------------------
+
+
+def test_riassumi_segmenti_su_strada_dritta():
+    gdf = _gdf_strada_dritta_3_archi()
+    _, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(gdf, df_archi_nodi, df_nodi)
+    r = riassumi_segmenti(gdf_seg)
+    assert r["n_segmenti"] == 1
+    assert r["n_isolati"] == 0
+    assert r["lunghezza_totale_km"] == pytest.approx(0.3)
+
+
+# ---------------------------------------------------------------------------
+# riassumi_intersezioni (continua)
 # ---------------------------------------------------------------------------
 
 
