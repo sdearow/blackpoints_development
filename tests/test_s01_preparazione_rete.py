@@ -6,7 +6,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
-from shapely.geometry import LineString, MultiLineString
+from shapely.geometry import LineString, MultiLineString, Point
 
 from src.s01_preparazione_rete import (
     _boolifica_si_no,
@@ -15,8 +15,11 @@ from src.s01_preparazione_rete import (
     joina_pgtu,
     pulisci_geometrie,
     riassumi,
+    riassumi_semafori,
     standardizza_colonne,
+    standardizza_semafori,
     valida_rete,
+    valida_semafori,
 )
 
 
@@ -302,3 +305,86 @@ def test_joina_pgtu_riproietta_automaticamente():
 
     # Il join riproietta internamente: l'arco 1 resta matchato a S.
     assert out.iloc[0]["pgtu_classifica"] == "S"
+
+
+# ---------------------------------------------------------------------------
+# Semafori
+# ---------------------------------------------------------------------------
+
+
+def _gdf_semafori_finto() -> gpd.GeoDataFrame:
+    """Dataset semafori finto con lo schema del file del Comune."""
+    punti = [Point(12.5, 41.9), Point(12.51, 41.91), Point(12.52, 41.92),
+             Point(12.53, 41.93)]
+    return gpd.GeoDataFrame(
+        {
+            "COD_IMP": ["00001", "00002", "00003", "00004"],
+            "TIPO": ["V", "V", "P", "V"],
+            "VIA_1": ["Via Cassia", "VIA APPIA", "Via Tiberina", "V.le Trastevere"],
+            "CIV": [None, None, "10", None],
+            "VIA_2": ["Via di Grottarossa", "Via Appia Pignatelli", None, "Via Marmorata"],
+            "VIA_3": [None, "Via Ardeatina", None, None],
+            "CIRC": ["XV", "VII", "III", "I"],
+            "Long": [12.5, 12.51, 12.52, 12.53],
+            "Lat": [41.9, 41.91, 41.92, 41.93],
+        },
+        geometry=punti,
+        crs="EPSG:4326",
+    )
+
+
+def test_standardizza_semafori_rinomina_e_deriva_flag():
+    gdf = _gdf_semafori_finto()
+    out = standardizza_semafori(gdf)
+
+    # Colonne rinominate.
+    for col in ("id_impianto", "tipo", "via_1", "via_2", "via_3",
+                "civico", "municipio_romano", "is_veicolare", "n_bracci"):
+        assert col in out.columns, f"manca {col}"
+
+    # Long/Lat droppate (ridondanti con la geometria).
+    assert "Long" not in out.columns
+    assert "Lat" not in out.columns
+
+    # Tipi.
+    assert str(out["tipo"].dtype) == "category"
+    assert out["is_veicolare"].dtype.name == "boolean"
+    assert out["n_bracci"].dtype.name == "Int64"
+
+    # Flag veicolare: V -> True, P -> False.
+    assert out["is_veicolare"].tolist() == [True, True, False, True]
+
+    # n_bracci: 2, 3, 1, 2.
+    assert out["n_bracci"].tolist() == [2, 3, 1, 2]
+
+
+def test_standardizza_semafori_normalizza_toponimi():
+    gdf = _gdf_semafori_finto()
+    out = standardizza_semafori(gdf)
+    # 'VIA APPIA' -> 'Via Appia', 'V.le Trastevere' -> 'Viale Trastevere'.
+    assert out.loc[1, "via_1"] == "Via Appia"
+    assert out.loc[3, "via_1"] == "Viale Trastevere"
+    # 'Via Cassia' (gia' corretto) resta tale.
+    assert out.loc[0, "via_1"] == "Via Cassia"
+
+
+def test_valida_semafori_rileva_duplicati():
+    gdf = _gdf_semafori_finto()
+    gdf.loc[2, "COD_IMP"] = "00001"
+    diagnosi = valida_semafori(gdf)
+    assert diagnosi["n_totali"] == 4
+    assert diagnosi["n_duplicati_id"] == 1
+    assert diagnosi["n_geom_nulle"] == 0
+
+
+def test_riassumi_semafori_conta_per_tipo_e_bracci():
+    gdf = standardizza_semafori(_gdf_semafori_finto())
+    riassunto = riassumi_semafori(gdf)
+    assert riassunto["n_totali"] == 4
+    assert riassunto["n_veicolari"] == 3
+    assert riassunto["n_per_tipo"]["V"] == 3
+    assert riassunto["n_per_tipo"]["P"] == 1
+    # n_bracci: tre record con 2, uno con 3, uno con 1 -> {2:2, 3:1, 1:1}
+    assert riassunto["n_per_bracci"][2] == 2
+    assert riassunto["n_per_bracci"][3] == 1
+    assert riassunto["n_per_bracci"][1] == 1

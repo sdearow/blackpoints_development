@@ -504,6 +504,153 @@ def salva_geopackage(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Semafori (Task 0.3 - lato dati sorgente)
+# ---------------------------------------------------------------------------
+
+#: Mappatura colonne del file ``semafori.gpkg`` fornito dal Comune di Roma.
+MAPPATURA_COLONNE_SEMAFORI: dict[str, str] = {
+    "COD_IMP": "id_impianto",
+    "TIPO": "tipo",
+    "VIA_1": "via_1",
+    "VIA_2": "via_2",
+    "VIA_3": "via_3",
+    "CIV": "civico",
+    "CIRC": "municipio_romano",
+}
+
+
+def carica_semafori(percorso: Path) -> gpd.GeoDataFrame:
+    """Carica il GeoPackage dei semafori.
+
+    Il file sorgente contiene tutti gli impianti semaforici di Roma con:
+    - ``COD_IMP``: identificativo univoco (stringa zero-padded)
+    - ``TIPO``: ``V`` (veicolare) o ``P`` (pedonale)
+    - ``VIA_1`` / ``VIA_2`` / ``VIA_3``: toponimi delle strade incrociate
+    - ``CIV``: civico (valorizzato solo per i semafori pedonali)
+    - ``CIRC``: municipio in numeri romani
+    - ``Long`` / ``Lat``: coordinate geografiche (duplicano la geometria)
+    """
+    if not percorso.exists():
+        raise FileNotFoundError(f"File semafori non trovato: {percorso}")
+    log.info("Caricamento semafori da %s", percorso)
+    gdf = gpd.read_file(percorso)
+    log.info("Caricati %d semafori con CRS %s", len(gdf), gdf.crs)
+    return gdf
+
+
+def standardizza_semafori(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Rinomina le colonne dei semafori, normalizza i toponimi e deriva i flag.
+
+    Nuove colonne calcolate:
+    - ``is_veicolare``: boolean, ``True`` se ``tipo == 'V'`` (gli impianti
+      pedonali puri non vengono usati come intersezione semaforizzata).
+    - ``n_bracci``: numero di toponimi non nulli tra ``via_1``, ``via_2``,
+      ``via_3`` (stima del numero di strade convergenti all'impianto).
+
+    I toponimi vengono normalizzati con :func:`src.s00_pulizia_incidenti.normalizza_nome_strada`
+    per essere coerenti con quelli del database incidenti nelle fasi di
+    matching successive.
+    """
+    from src.s00_pulizia_incidenti import normalizza_nome_strada
+
+    gdf = gdf.rename(
+        columns={k: v for k, v in MAPPATURA_COLONNE_SEMAFORI.items() if k in gdf.columns}
+    )
+
+    # Droppa Long/Lat: duplicano la geometria e creano rumore.
+    for col_extra in ("Long", "Lat"):
+        if col_extra in gdf.columns:
+            gdf = gdf.drop(columns=[col_extra])
+
+    # Tipo: strip, uppercase.
+    if "tipo" in gdf.columns:
+        gdf["tipo"] = gdf["tipo"].astype(str).str.strip().str.upper().astype("category")
+        gdf["is_veicolare"] = (gdf["tipo"] == "V").astype("boolean")
+
+    # Toponimi: strip + normalizzazione (Via TIBERINA -> Via Tiberina).
+    for col in ("via_1", "via_2", "via_3"):
+        if col in gdf.columns:
+            gdf[col] = gdf[col].apply(normalizza_nome_strada)
+
+    # n_bracci: conta i toponimi non nulli.
+    colonne_via = [c for c in ("via_1", "via_2", "via_3") if c in gdf.columns]
+    if colonne_via:
+        gdf["n_bracci"] = gdf[colonne_via].notna().sum(axis=1).astype("Int64")
+
+    # Municipio romano: strip, uppercase (I, II, ..., XV).
+    if "municipio_romano" in gdf.columns:
+        gdf["municipio_romano"] = (
+            gdf["municipio_romano"].astype(str).str.strip().str.upper().astype("category")
+        )
+
+    # Id impianto: strip (zero-padded string).
+    if "id_impianto" in gdf.columns:
+        gdf["id_impianto"] = gdf["id_impianto"].astype(str).str.strip()
+
+    return gdf
+
+
+def valida_semafori(gdf: gpd.GeoDataFrame) -> dict[str, int]:
+    """Controlli di sanita' sul dataset dei semafori."""
+    diagnosi = {
+        "n_totali": int(len(gdf)),
+        "n_geom_nulle": int(gdf.geometry.isna().sum()),
+        "n_geom_vuote": int(gdf.geometry.is_empty.sum()),
+        "n_duplicati_id": 0,
+    }
+    if "id_impianto" in gdf.columns:
+        diagnosi["n_duplicati_id"] = int(gdf["id_impianto"].duplicated().sum())
+    elif "COD_IMP" in gdf.columns:
+        diagnosi["n_duplicati_id"] = int(gdf["COD_IMP"].duplicated().sum())
+
+    for chiave, valore in diagnosi.items():
+        if chiave == "n_totali":
+            log.info("Validazione semafori: %d record totali", valore)
+        elif valore > 0:
+            log.warning("Validazione semafori: %s = %d", chiave, valore)
+    return diagnosi
+
+
+def riassumi_semafori(gdf: gpd.GeoDataFrame) -> dict[str, Any]:
+    """Produce un riassunto del dataset semafori."""
+    riassunto: dict[str, Any] = {"n_totali": int(len(gdf))}
+    if "tipo" in gdf.columns:
+        riassunto["n_per_tipo"] = (
+            gdf["tipo"].value_counts(dropna=False).astype(int).to_dict()
+        )
+    if "is_veicolare" in gdf.columns:
+        riassunto["n_veicolari"] = int(gdf["is_veicolare"].fillna(False).sum())
+    if "n_bracci" in gdf.columns:
+        riassunto["n_per_bracci"] = (
+            gdf["n_bracci"].value_counts(dropna=False).astype(int).to_dict()
+        )
+    return riassunto
+
+
+def salva_semafori_geopackage(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
+    """Salva il dataset semafori in GeoPackage."""
+    percorso.parent.mkdir(parents=True, exist_ok=True)
+    if percorso.exists():
+        percorso.unlink()
+    log.info("Salvataggio semafori: %s (%d record)", percorso, len(gdf))
+    gdf.to_file(percorso, driver="GPKG", layer="semafori_prep")
+
+
+def prepara_semafori(config: dict[str, Any]) -> gpd.GeoDataFrame:
+    """Pipeline completa di preparazione dei semafori."""
+    percorso_rel = config["paths"]["raw"]["semafori"]
+    percorso = RADICE_PROGETTO / percorso_rel
+    gdf = carica_semafori(percorso)
+
+    valida_semafori(gdf)
+    gdf = standardizza_semafori(gdf)
+
+    crs_target = config["crs"]["metrico"]
+    gdf = riproietta(gdf, crs_target=crs_target)
+    return gdf
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -548,6 +695,18 @@ def main(config: dict[str, Any]) -> None:
     output_rel = config["paths"]["interim"]["rete_tomtom_prep"]
     output = RADICE_PROGETTO / output_rel
     salva_geopackage(gdf, output)
+
+    # --- Preparazione semafori (Task 0.3 lato dati sorgente) ---
+    gdf_sem = prepara_semafori(config)
+
+    riassunto_sem = riassumi_semafori(gdf_sem)
+    log.info("Riassunto semafori preparati:")
+    for chiave, valore in riassunto_sem.items():
+        log.info("  %s: %s", chiave, valore)
+
+    output_sem_rel = config["paths"]["interim"]["semafori_prep"]
+    output_sem = RADICE_PROGETTO / output_sem_rel
+    salva_semafori_geopackage(gdf_sem, output_sem)
 
 
 if __name__ == "__main__":

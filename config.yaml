@@ -48,6 +48,7 @@ paths:
   interim:
     incidenti_clean: "data/interim/incidenti_clean.gpkg"
     rete_tomtom_prep: "data/interim/rete_tomtom_prep.gpkg"
+    semafori_prep: "data/interim/semafori_prep.gpkg"
     intersezioni: "data/interim/intersezioni.gpkg"
     segmenti: "data/interim/segmenti.gpkg"
     incidenti_matched: "data/interim/incidenti_matched.gpkg"
@@ -61,7 +62,12 @@ paths:
 # ---------------------------------------------------------------------------
 matching:
   # Raggio del buffer attorno ai nodi-intersezione (metri).
-  raggio_intersezione: 20
+  # Entro questo raggio un incidente viene assegnato all'intersezione
+  # invece che al segmento piu' vicino.
+  raggio_intersezione: 25
+  # Tolleranza (metri) per considerare due endpoint di archi distinti
+  # come lo stesso nodo durante l'estrazione delle intersezioni da TomTom.
+  tolleranza_nodo: 0.5
   # Distanza massima oltre la quale un incidente viene assegnato per pura
   # vicinanza geometrica al segmento piu' vicino (metri).
   soglia_snap_geometrica: 50
