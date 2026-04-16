@@ -11,12 +11,17 @@ from shapely.geometry import LineString, MultiLineString, Point
 from src.s02_matching import (
     _endpoint_linea,
     _norm_topo,
+    abbina_incidenti,
+    abbinamento_geometrico_intersezioni,
+    abbinamento_geometrico_segmenti,
+    abbinamento_toponomastico,
     associa_semafori,
     costruisci_nodi,
     costruisci_segmenti,
     estrai_endpoint_archi,
     estrai_intersezioni,
     riassumi_intersezioni,
+    riassumi_matching,
     riassumi_segmenti,
 )
 
@@ -504,3 +509,183 @@ def test_riassumi_intersezioni_conta_grado_e_semafori():
     assert r["n_semafori_associati"] == 3
     assert r["n_per_grado"][3] == 2
     assert r["n_per_grado"][4] == 1
+
+
+# ---------------------------------------------------------------------------
+# Matching incidenti (Task 1.2 + 1.3)
+# ---------------------------------------------------------------------------
+
+
+def _rete_a_T_completa():
+    """Costruisce rete a T, intersezioni e segmenti per i test di matching."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2, 3], dtype="Int64"),
+            "toponimo": ["Via Principale", "Via Principale", "Via Laterale"],
+            "tgm": [1000.0, 1000.0, 500.0],
+            "lunghezza_m": [100.0, 100.0, 100.0],
+        },
+        geometry=[
+            LineString([(0, 0), (100, 0)]),
+            LineString([(100, 0), (200, 0)]),
+            LineString([(100, 0), (100, 100)]),
+        ],
+        crs="EPSG:32633",
+    )
+    gdf_int, df_archi_nodi = estrai_intersezioni(gdf, tolleranza_m=0.5)
+    gdf_int["is_semaforizzata"] = False
+    gdf_int["n_semafori"] = 0
+    gdf_int["id_impianti"] = [[] for _ in range(len(gdf_int))]
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi, soglia_var_tgm=0.30, lung_min=100, lung_max=2000
+    )
+    return gdf_int, gdf_seg
+
+
+def test_abbinamento_geometrico_intersezioni_entro_raggio():
+    gdf_int, _ = _rete_a_T_completa()
+    gdf_inc = gpd.GeoDataFrame(
+        {"id_incidente": [1, 2, 3]},
+        geometry=[
+            Point(100, 0),   # sull'intersezione
+            Point(100, 15),  # vicino (15 m)
+            Point(100, 40),  # lontano (40 m)
+        ],
+        crs="EPSG:32633",
+    )
+    df = abbinamento_geometrico_intersezioni(gdf_inc, gdf_int, raggio_m=25.0)
+    assert df.loc[1, "match_intersezione"]
+    assert df.loc[2, "match_intersezione"]
+    assert not df.loc[3, "match_intersezione"]
+
+
+def test_abbinamento_geometrico_segmenti_soglia():
+    _, gdf_seg = _rete_a_T_completa()
+    gdf_inc = gpd.GeoDataFrame(
+        {"id_incidente": [1, 2]},
+        geometry=[
+            Point(50, 10),    # vicino all'arco 1 (10 m)
+            Point(50, 200),   # lontano da tutti (>50 m)
+        ],
+        crs="EPSG:32633",
+    )
+    df = abbinamento_geometrico_segmenti(gdf_inc, gdf_seg, soglia_m=50.0)
+    assert df.loc[1, "match_segmento"]
+    assert not df.loc[2, "match_segmento"]
+
+
+def test_abbina_incidenti_priorita_intersezione():
+    """Un incidente sull'intersezione deve essere abbinato all'intersezione
+    anche se ci sono segmenti vicinissimi."""
+    gdf_int, gdf_seg = _rete_a_T_completa()
+    gdf_inc = gpd.GeoDataFrame(
+        {
+            "id_incidente": [1],
+            "strada1": ["Via Principale"],
+        },
+        geometry=[Point(100, 0)],
+        crs="EPSG:32633",
+    )
+    out = abbina_incidenti(
+        gdf_inc, gdf_int, gdf_seg,
+        raggio_intersezione_m=25.0,
+        soglia_snap_geometrica_m=50.0,
+        soglia_snap_toponomastica_m=100.0,
+    )
+    assert out.iloc[0]["match_type"] == "intersezione"
+
+
+def test_abbina_incidenti_priorita_segmento():
+    """Un incidente lontano dalle intersezioni ma vicino a un segmento
+    deve essere abbinato al segmento."""
+    gdf_int, gdf_seg = _rete_a_T_completa()
+    gdf_inc = gpd.GeoDataFrame(
+        {
+            "id_incidente": [1],
+            "strada1": ["Via Principale"],
+        },
+        geometry=[Point(50, 5)],
+        crs="EPSG:32633",
+    )
+    out = abbina_incidenti(
+        gdf_inc, gdf_int, gdf_seg,
+        raggio_intersezione_m=25.0,
+        soglia_snap_geometrica_m=50.0,
+        soglia_snap_toponomastica_m=100.0,
+    )
+    assert out.iloc[0]["match_type"] == "segmento"
+
+
+def test_abbina_incidenti_fallback_toponomastico():
+    """Un incidente fuori dalla soglia geometrica ma dentro la soglia
+    toponomastica con un match fuzzy valido deve essere abbinato come
+    segmento_toponimo."""
+    gdf_int, gdf_seg = _rete_a_T_completa()
+    gdf_inc = gpd.GeoDataFrame(
+        {
+            "id_incidente": [1],
+            "strada1": ["VIA PRINCIPALE"],  # stesso toponimo, case diversa
+        },
+        geometry=[Point(45, 55)],  # a 55 m dall'arco 1, fuori soglia geometrica
+        crs="EPSG:32633",
+    )
+    out = abbina_incidenti(
+        gdf_inc, gdf_int, gdf_seg,
+        raggio_intersezione_m=25.0,
+        soglia_snap_geometrica_m=50.0,
+        soglia_snap_toponomastica_m=100.0,
+    )
+    assert out.iloc[0]["match_type"] == "segmento_toponimo"
+    assert out.iloc[0]["score_topon"] >= 85
+
+
+def test_abbina_incidenti_non_abbinato():
+    """Un incidente molto lontano da tutto e senza toponimo compatibile
+    deve restare non_abbinato."""
+    gdf_int, gdf_seg = _rete_a_T_completa()
+    gdf_inc = gpd.GeoDataFrame(
+        {
+            "id_incidente": [1],
+            "strada1": ["Via Inesistente"],
+        },
+        geometry=[Point(1000, 1000)],
+        crs="EPSG:32633",
+    )
+    out = abbina_incidenti(
+        gdf_inc, gdf_int, gdf_seg,
+        raggio_intersezione_m=25.0,
+        soglia_snap_geometrica_m=50.0,
+        soglia_snap_toponomastica_m=100.0,
+    )
+    assert out.iloc[0]["match_type"] == "non_abbinato"
+
+
+def test_riassumi_matching_conta_tipi():
+    gdf_int, gdf_seg = _rete_a_T_completa()
+    gdf_inc = gpd.GeoDataFrame(
+        {
+            "id_incidente": [1, 2, 3, 4],
+            "strada1": ["Via Principale", "Via Principale", "Via Principale", "Inesistente"],
+        },
+        geometry=[
+            Point(100, 0),     # intersezione
+            Point(50, 5),      # segmento
+            Point(45, 55),     # toponomastico
+            Point(5000, 5000), # non abbinato
+        ],
+        crs="EPSG:32633",
+    )
+    out = abbina_incidenti(
+        gdf_inc, gdf_int, gdf_seg,
+        raggio_intersezione_m=25.0,
+        soglia_snap_geometrica_m=50.0,
+        soglia_snap_toponomastica_m=100.0,
+    )
+    r = riassumi_matching(out)
+    assert r["n_incidenti"] == 4
+    assert r["n_intersezione"] == 1
+    assert r["n_segmento"] == 1
+    assert r["n_segmento_toponimo"] == 1
+    assert r["n_non_abbinato"] == 1
