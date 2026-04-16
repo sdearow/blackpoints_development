@@ -852,6 +852,318 @@ def salva_segmenti(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Matching incidenti -> intersezioni/segmenti (Task 1.2 + 1.3)
+# ---------------------------------------------------------------------------
+
+
+def _nome_strada_incidente(valore: Any) -> str | None:
+    """Normalizza il toponimo di un incidente per il matching fuzzy.
+
+    Applica la stessa normalizzazione dei segmenti (``_norm_topo``),
+    cosi' i punteggi rapidfuzz sono confrontabili.
+    """
+    return _norm_topo(valore)
+
+
+def abbinamento_geometrico_intersezioni(
+    gdf_incidenti: gpd.GeoDataFrame,
+    gdf_intersezioni: gpd.GeoDataFrame,
+    raggio_m: float,
+) -> pd.DataFrame:
+    """Per ogni incidente trova l'intersezione piu' vicina.
+
+    Restituisce un DataFrame indicizzato su ``id_incidente`` con colonne
+    ``id_nodo_vicino``, ``distanza_int_m``, ``match_intersezione`` (bool
+    ``True`` se ``distanza_int_m <= raggio_m``).
+    """
+    if gdf_incidenti.crs != gdf_intersezioni.crs:
+        gdf_incidenti = gdf_incidenti.to_crs(gdf_intersezioni.crs)
+
+    joined = gpd.sjoin_nearest(
+        gdf_incidenti[["id_incidente", "geometry"]],
+        gdf_intersezioni[["id_nodo", "geometry"]],
+        how="left",
+        distance_col="distanza_int_m",
+    )
+    # sjoin_nearest puo' restituire piu' righe per incidente se ci sono ties:
+    # teniamo la prima.
+    joined = joined.drop_duplicates(subset=["id_incidente"], keep="first")
+    joined = joined.rename(columns={"id_nodo": "id_nodo_vicino"})
+    joined["match_intersezione"] = joined["distanza_int_m"] <= raggio_m
+    return joined.set_index("id_incidente")[
+        ["id_nodo_vicino", "distanza_int_m", "match_intersezione"]
+    ]
+
+
+def abbinamento_geometrico_segmenti(
+    gdf_incidenti: gpd.GeoDataFrame,
+    gdf_segmenti: gpd.GeoDataFrame,
+    soglia_m: float,
+) -> pd.DataFrame:
+    """Per ogni incidente trova il segmento geometricamente piu' vicino.
+
+    Restituisce un DataFrame indicizzato su ``id_incidente`` con colonne
+    ``id_segmento_vicino``, ``distanza_seg_m``, ``match_segmento`` (bool
+    ``True`` se ``distanza_seg_m <= soglia_m``).
+    """
+    if gdf_incidenti.crs != gdf_segmenti.crs:
+        gdf_incidenti = gdf_incidenti.to_crs(gdf_segmenti.crs)
+
+    joined = gpd.sjoin_nearest(
+        gdf_incidenti[["id_incidente", "geometry"]],
+        gdf_segmenti[["id_segmento", "geometry"]],
+        how="left",
+        distance_col="distanza_seg_m",
+    )
+    joined = joined.drop_duplicates(subset=["id_incidente"], keep="first")
+    joined = joined.rename(columns={"id_segmento": "id_segmento_vicino"})
+    joined["match_segmento"] = joined["distanza_seg_m"] <= soglia_m
+    return joined.set_index("id_incidente")[
+        ["id_segmento_vicino", "distanza_seg_m", "match_segmento"]
+    ]
+
+
+def abbinamento_toponomastico(
+    gdf_incidenti_residui: gpd.GeoDataFrame,
+    gdf_segmenti: gpd.GeoDataFrame,
+    raggio_m: float,
+    soglia_fuzzy: int = 85,
+) -> pd.DataFrame:
+    """Fallback toponomastico: trova il segmento compatibile per nome.
+
+    Per ogni incidente residuo cerca i segmenti entro ``raggio_m`` metri
+    e, fra quelli con toponimo gia' normalizzato compatibile
+    (``rapidfuzz.fuzz.token_set_ratio >= soglia_fuzzy``), sceglie quello
+    geometricamente piu' vicino.
+
+    Restituisce un DataFrame indicizzato su ``id_incidente`` con colonne
+    ``id_segmento_topon``, ``distanza_topon_m``, ``score_topon`` (int).
+    Incidenti senza candidato valido NON vengono inclusi nel risultato.
+    """
+    from rapidfuzz import fuzz
+
+    if len(gdf_incidenti_residui) == 0 or len(gdf_segmenti) == 0:
+        return pd.DataFrame(
+            columns=["id_segmento_topon", "distanza_topon_m", "score_topon"]
+        )
+
+    if gdf_incidenti_residui.crs != gdf_segmenti.crs:
+        gdf_incidenti_residui = gdf_incidenti_residui.to_crs(gdf_segmenti.crs)
+
+    # Normalizza i toponimi per il fuzzy match.
+    inc = gdf_incidenti_residui.copy()
+    inc["_topo_norm"] = inc["strada1"].apply(_nome_strada_incidente)
+    # Scarta gli incidenti senza nome strada: impossibile fallback.
+    inc = inc.loc[inc["_topo_norm"].notna()]
+    if len(inc) == 0:
+        return pd.DataFrame(
+            columns=["id_segmento_topon", "distanza_topon_m", "score_topon"]
+        )
+
+    seg = gdf_segmenti[["id_segmento", "toponimo", "geometry"]].copy()
+    seg["_topo_norm"] = seg["toponimo"].apply(_norm_topo)
+
+    # Join spaziale "dwithin" con buffer: per ogni incidente tutti i
+    # segmenti entro raggio_m. Implementato via sjoin su buffer circolare
+    # per compatibilita' con versioni vecchie di geopandas.
+    inc_buf = inc[["id_incidente", "_topo_norm", "geometry"]].copy()
+    inc_buf["geometry"] = inc_buf.geometry.buffer(raggio_m)
+
+    joined = gpd.sjoin(
+        inc_buf,
+        seg[["id_segmento", "_topo_norm", "geometry"]].rename(
+            columns={"_topo_norm": "_topo_norm_seg"}
+        ),
+        how="inner",
+        predicate="intersects",
+    )
+    if len(joined) == 0:
+        return pd.DataFrame(
+            columns=["id_segmento_topon", "distanza_topon_m", "score_topon"]
+        )
+
+    # Calcola il punteggio fuzzy riga per riga.
+    scores = np.array(
+        [
+            fuzz.token_set_ratio(a or "", b or "")
+            for a, b in zip(joined["_topo_norm"].values, joined["_topo_norm_seg"].values)
+        ],
+        dtype=float,
+    )
+    joined["score_topon"] = scores
+    joined = joined.loc[joined["score_topon"] >= soglia_fuzzy].copy()
+    if len(joined) == 0:
+        return pd.DataFrame(
+            columns=["id_segmento_topon", "distanza_topon_m", "score_topon"]
+        )
+
+    # Calcola la distanza geometrica reale incidente <-> segmento
+    # per fare il tie-break (prendi il piu' vicino a parita' di score).
+    inc_pts = inc[["id_incidente", "geometry"]].set_index("id_incidente")
+    seg_geom = seg[["id_segmento", "geometry"]].set_index("id_segmento")
+
+    idx_inc = joined["id_incidente"].to_numpy()
+    idx_seg = joined["id_segmento"].to_numpy()
+    pts_a = inc_pts.loc[idx_inc, "geometry"].values
+    pts_b = seg_geom.loc[idx_seg, "geometry"].values
+    distanze = np.array(
+        [a.distance(b) for a, b in zip(pts_a, pts_b)], dtype=float
+    )
+    joined["distanza_topon_m"] = distanze
+
+    # Per ogni incidente, scegli prima per score discendente, poi per
+    # distanza crescente.
+    joined = joined.sort_values(
+        by=["id_incidente", "score_topon", "distanza_topon_m"],
+        ascending=[True, False, True],
+    )
+    best = joined.drop_duplicates(subset=["id_incidente"], keep="first")
+    best = best.rename(columns={"id_segmento": "id_segmento_topon"})
+    return best.set_index("id_incidente")[
+        ["id_segmento_topon", "distanza_topon_m", "score_topon"]
+    ]
+
+
+def abbina_incidenti(
+    gdf_incidenti: gpd.GeoDataFrame,
+    gdf_intersezioni: gpd.GeoDataFrame,
+    gdf_segmenti: gpd.GeoDataFrame,
+    raggio_intersezione_m: float,
+    soglia_snap_geometrica_m: float,
+    soglia_snap_toponomastica_m: float,
+    soglia_fuzzy: int = 85,
+) -> gpd.GeoDataFrame:
+    """Abbinamento incidenti -> rete, secondo la gerarchia del Task 1.2/1.3.
+
+    Regole (nell'ordine):
+
+    1. Se l'incidente cade entro ``raggio_intersezione_m`` da un nodo
+       intersezione, viene abbinato all'intersezione
+       (``match_type="intersezione"``).
+    2. Altrimenti, se cade entro ``soglia_snap_geometrica_m`` da un
+       segmento, viene abbinato al segmento piu' vicino
+       (``match_type="segmento"``).
+    3. Altrimenti si tenta il fallback toponomastico entro
+       ``soglia_snap_toponomastica_m``: fra i segmenti nel raggio, si
+       sceglie quello col miglior match fuzzy sul nome strada
+       (``match_type="segmento_toponimo"``).
+    4. Altrimenti l'incidente resta ``match_type="non_abbinato"``.
+
+    Restituisce il GeoDataFrame degli incidenti con le nuove colonne:
+    ``match_type``, ``id_match`` (id_nodo o id_segmento), ``distanza_match_m``,
+    ``score_topon`` (NaN se non toponomastico).
+    """
+    log.info(
+        "Abbinamento incidenti: %d incidenti, %d intersezioni, %d segmenti",
+        len(gdf_incidenti),
+        len(gdf_intersezioni),
+        len(gdf_segmenti),
+    )
+
+    # 1. Nearest intersezione per ogni incidente.
+    log.info("  step 1: nearest intersezione (raggio %.0f m)", raggio_intersezione_m)
+    df_int = abbinamento_geometrico_intersezioni(
+        gdf_incidenti, gdf_intersezioni, raggio_m=raggio_intersezione_m
+    )
+
+    # 2. Nearest segmento per ogni incidente.
+    log.info("  step 2: nearest segmento (soglia %.0f m)", soglia_snap_geometrica_m)
+    df_seg = abbinamento_geometrico_segmenti(
+        gdf_incidenti, gdf_segmenti, soglia_m=soglia_snap_geometrica_m
+    )
+
+    # Prepara il risultato di default (non abbinato).
+    out = gdf_incidenti.copy()
+    out = out.merge(df_int, left_on="id_incidente", right_index=True, how="left")
+    out = out.merge(df_seg, left_on="id_incidente", right_index=True, how="left")
+
+    out["match_type"] = "non_abbinato"
+    out["id_match"] = pd.Series([pd.NA] * len(out), dtype="Int64")
+    out["distanza_match_m"] = np.nan
+
+    # Priorita' 1: intersezione.
+    mask_int = out["match_intersezione"].fillna(False)
+    out.loc[mask_int, "match_type"] = "intersezione"
+    out.loc[mask_int, "id_match"] = out.loc[mask_int, "id_nodo_vicino"].astype("Int64")
+    out.loc[mask_int, "distanza_match_m"] = out.loc[mask_int, "distanza_int_m"]
+
+    # Priorita' 2: segmento geometrico (solo su chi non e' gia' intersezione).
+    mask_seg = ~mask_int & out["match_segmento"].fillna(False)
+    out.loc[mask_seg, "match_type"] = "segmento"
+    out.loc[mask_seg, "id_match"] = out.loc[mask_seg, "id_segmento_vicino"].astype("Int64")
+    out.loc[mask_seg, "distanza_match_m"] = out.loc[mask_seg, "distanza_seg_m"]
+
+    # Priorita' 3: fallback toponomastico.
+    residui_mask = ~mask_int & ~mask_seg
+    n_residui = int(residui_mask.sum())
+    log.info("  step 3: fallback toponomastico su %d residui", n_residui)
+
+    out["score_topon"] = np.nan
+    if n_residui > 0:
+        gdf_residui = out.loc[residui_mask, ["id_incidente", "strada1", "geometry"]].copy()
+        df_topon = abbinamento_toponomastico(
+            gdf_residui,
+            gdf_segmenti,
+            raggio_m=soglia_snap_toponomastica_m,
+            soglia_fuzzy=soglia_fuzzy,
+        )
+        if len(df_topon) > 0:
+            # Propaga i risultati toponomastici tramite un lookup puntuale.
+            topon_map = df_topon.to_dict(orient="index")
+            ids_topon = out.loc[residui_mask, "id_incidente"].to_numpy()
+            for pos, id_inc in zip(out.index[residui_mask], ids_topon):
+                rec = topon_map.get(id_inc)
+                if rec is None:
+                    continue
+                out.at[pos, "match_type"] = "segmento_toponimo"
+                out.at[pos, "id_match"] = int(rec["id_segmento_topon"])
+                out.at[pos, "distanza_match_m"] = float(rec["distanza_topon_m"])
+                out.at[pos, "score_topon"] = float(rec["score_topon"])
+
+    # Pulizia colonne intermedie.
+    out = out.drop(
+        columns=[
+            "id_nodo_vicino",
+            "distanza_int_m",
+            "match_intersezione",
+            "id_segmento_vicino",
+            "distanza_seg_m",
+            "match_segmento",
+        ],
+        errors="ignore",
+    )
+
+    # Log riassuntivo.
+    conteggi = out["match_type"].value_counts().to_dict()
+    log.info("  Esito matching: %s", conteggi)
+    return out
+
+
+def riassumi_matching(gdf: gpd.GeoDataFrame) -> dict[str, Any]:
+    """Riassunto del risultato di ``abbina_incidenti``."""
+    if len(gdf) == 0:
+        return {"n_incidenti": 0}
+    r: dict[str, Any] = {"n_incidenti": int(len(gdf))}
+    counts = gdf["match_type"].value_counts().to_dict()
+    for k in ("intersezione", "segmento", "segmento_toponimo", "non_abbinato"):
+        r[f"n_{k}"] = int(counts.get(k, 0))
+    abbinati = gdf.loc[gdf["match_type"] != "non_abbinato"]
+    if len(abbinati) > 0:
+        r["distanza_match_mediana_m"] = float(abbinati["distanza_match_m"].median())
+        r["distanza_match_p90_m"] = float(abbinati["distanza_match_m"].quantile(0.90))
+    return r
+
+
+def salva_incidenti_matched(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
+    """Salva il GeoDataFrame degli incidenti con matching su GeoPackage."""
+    percorso.parent.mkdir(parents=True, exist_ok=True)
+    if percorso.exists():
+        percorso.unlink()
+    log.info("Salvataggio incidenti_matched: %s (%d record)", percorso, len(gdf))
+    gdf.to_file(percorso, driver="GPKG", layer="incidenti_matched")
+
+
+# ---------------------------------------------------------------------------
 # Pipeline principale
 # ---------------------------------------------------------------------------
 
@@ -937,6 +1249,34 @@ def main(config: dict[str, Any]) -> None:
     out_seg_rel = config["paths"]["interim"]["segmenti"]
     out_seg_path = RADICE_PROGETTO / out_seg_rel
     salva_segmenti(gdf_segmenti, out_seg_path)
+
+    # Matching incidenti (Task 1.2 + 1.3).
+    inc_rel = config["paths"]["interim"]["incidenti_clean"]
+    inc_path = RADICE_PROGETTO / inc_rel
+    log.info("Caricamento incidenti puliti da %s", inc_path)
+    gdf_incidenti = gpd.read_file(inc_path)
+    log.info("Caricati %d incidenti con CRS %s", len(gdf_incidenti), gdf_incidenti.crs)
+
+    raggio_int = float(config["matching"]["raggio_intersezione"])
+    soglia_geo = float(config["matching"]["soglia_snap_geometrica"])
+    soglia_topon = float(config["matching"]["soglia_snap_toponomastica"])
+    gdf_matched = abbina_incidenti(
+        gdf_incidenti,
+        gdf_intersezioni,
+        gdf_segmenti,
+        raggio_intersezione_m=raggio_int,
+        soglia_snap_geometrica_m=soglia_geo,
+        soglia_snap_toponomastica_m=soglia_topon,
+    )
+
+    riassunto_match = riassumi_matching(gdf_matched)
+    log.info("Riassunto matching:")
+    for chiave, valore in riassunto_match.items():
+        log.info("  %s: %s", chiave, valore)
+
+    out_match_rel = config["paths"]["interim"]["incidenti_matched"]
+    out_match_path = RADICE_PROGETTO / out_match_rel
+    salva_incidenti_matched(gdf_matched, out_match_path)
 
 
 if __name__ == "__main__":
