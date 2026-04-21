@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Input, Output, State
+from dash import Input, Output, State, html
 from dash.exceptions import PreventUpdate
 
 from dashboard.layouts import COLORI_FASCE, ORDINE_FASCE
@@ -365,5 +365,4 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
 
 
 def _msg_placeholder(testo: str) -> Any:
-    from dash import html
     return html.P(testo, style={"color": "#6c7086", "fontStyle": "italic", "fontSize": "14px"})

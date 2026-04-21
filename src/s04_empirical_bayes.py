@@ -94,15 +94,15 @@ def calcola_epdo(
         "ferito_lieve": "n_feriti_lievi",
         "solo_danni": "n_solo_danni",
     }
+    colonne_presenti = [col for col in cols.values() if col in df.columns]
+    if not colonne_presenti and "n_incidenti" in df.columns:
+        # Fallback: nessuna colonna di gravita' disponibile, usa n_incidenti con peso 1.
+        return df["n_incidenti"].fillna(0).astype(float).copy()
     epdo = pd.Series(0.0, index=df.index)
     for gravita, col in cols.items():
         if col in df.columns:
             peso = float(pesi_epdo.get(gravita, 1.0))
             epdo += df[col].fillna(0).astype(float) * peso
-        elif "n_incidenti" in df.columns:
-            # Fallback: tutti gli incidenti con peso medio 1.
-            epdo += df["n_incidenti"].fillna(0).astype(float)
-            break
     return epdo
 
 

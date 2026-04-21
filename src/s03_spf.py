@@ -312,7 +312,7 @@ def calibra_nb2(
         "alpha": alpha,
         "k": k,
         "aic": float(risultato.aic) if hasattr(risultato, "aic") else None,
-        "bic": float(risultato.bic_deviance) if hasattr(risultato, "bic_deviance") else None,
+        "bic": float(risultato.bic_llf) if hasattr(risultato, "bic_llf") else float(risultato.bic) if hasattr(risultato, "bic") else None,
         "n_siti": int(len(df)),
         "predetti": predetti,
         "converged": True,
