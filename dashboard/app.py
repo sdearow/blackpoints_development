@@ -25,17 +25,37 @@ _RADICE = Path(__file__).resolve().parent.parent
 
 
 def _carica_dati(gpkg_path: Path) -> pd.DataFrame:
-    """Carica segmenti e intersezioni, calcola i centroidi e unisce."""
-    log.info("Caricamento dati da %s", gpkg_path)
+    """Carica segmenti e intersezioni, calcola i centroidi e unisce.
 
-    gdf_seg = gpd.read_file(gpkg_path, layer="segmenti")
-    gdf_int = gpd.read_file(gpkg_path, layer="intersezioni")
+    Se il GeoPackage non esiste, tenta il fallback sui GeoJSON in
+    data/processed/segmenti.geojson e intersezioni.geojson.
+    """
+    processed = gpkg_path.parent
 
-    # Centroidi calcolati in CRS metrico, poi convertiti in WGS84.
-    centr_seg = gdf_seg.geometry.centroid.to_crs("EPSG:4326")
-    centr_int = gdf_int.geometry.centroid.to_crs("EPSG:4326") \
-        if gdf_int.crs and gdf_int.crs.to_epsg() != 4326 \
-        else gdf_int.geometry
+    # --- Fallback automatico ai GeoJSON se il GeoPackage manca ---
+    geojson_seg = processed / "segmenti.geojson"
+    geojson_int = processed / "intersezioni.geojson"
+
+    if not gpkg_path.exists():
+        if geojson_seg.exists() and geojson_int.exists():
+            log.info("GeoPackage non trovato, carico dai GeoJSON...")
+            gdf_seg = gpd.read_file(geojson_seg)
+            gdf_int = gpd.read_file(geojson_int)
+        else:
+            raise FileNotFoundError(
+                f"Nessun dato trovato. Attesi:\n"
+                f"  {gpkg_path}\noppure:\n"
+                f"  {geojson_seg}\n  {geojson_int}"
+            )
+    else:
+        log.info("Caricamento dati da %s", gpkg_path)
+        gdf_seg = gpd.read_file(gpkg_path, layer="segmenti")
+        gdf_int = gpd.read_file(gpkg_path, layer="intersezioni")
+
+    # Centroidi calcolati sempre in UTM 33N (metrico), poi riproiettati WGS84.
+    _utm = "EPSG:32633"
+    centr_seg = gdf_seg.to_crs(_utm).geometry.centroid.to_crs("EPSG:4326")
+    centr_int = gdf_int.to_crs(_utm).geometry.centroid.to_crs("EPSG:4326")
 
     gdf_seg["lon"] = centr_seg.x
     gdf_seg["lat"] = centr_seg.y
