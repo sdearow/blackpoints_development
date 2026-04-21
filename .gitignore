@@ -59,6 +59,9 @@ data/processed/*
 # I CSV degli incidenti grezzi sono versionati esplicitamente.
 !data/raw/incidenti/
 !data/raw/incidenti/*.csv
+# GeoJSON dei risultati finali (versionati per uso diretto senza pipeline)
+!data/processed/segmenti.geojson
+!data/processed/intersezioni.geojson
 
 # --- Output dashboard / report ---
 dashboard/assets/generated/
