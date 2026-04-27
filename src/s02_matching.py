@@ -201,6 +201,7 @@ def costruisci_nodi(
 def estrai_intersezioni(
     gdf_rete: gpd.GeoDataFrame,
     tolleranza_m: float = 0.5,
+    filtra_falsi_incroci: bool = True,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
     """Estrae i nodi-intersezione della rete TomTom.
 
@@ -285,6 +286,20 @@ def estrai_intersezioni(
         geometry=geometry,
         crs=gdf_rete.crs,
     )
+
+    if filtra_falsi_incroci:
+        n_prima = len(gdf_intersezioni)
+        n_topo = gdf_intersezioni["toponimi"].apply(len)
+        mask_falso = (gdf_intersezioni["n_archi"] == 3) & (n_topo == 1)
+        gdf_intersezioni = gdf_intersezioni.loc[~mask_falso].copy()
+        n_filtrate = int(mask_falso.sum())
+        log.info(
+            "Filtrate %d false intersezioni su %d candidati "
+            "(3 archi, 1 solo toponimo distinto). Restano %d.",
+            n_filtrate,
+            n_prima,
+            len(gdf_intersezioni),
+        )
 
     return gdf_intersezioni, df_archi_nodi
 
@@ -514,39 +529,55 @@ def _costruisci_indice_archi(
 def _costruisci_catene(
     indice: dict[str, Any],
     soglia_var_tgm: float,
+    id_nodi_intersezione: set[int] | None = None,
 ) -> list[list[int]]:
     """Costruisce le catene massimali di archi mergiabili.
 
-    Una catena e' una sequenza ordinata di archi consecutivi tali che:
-    - i nodi interni hanno grado esattamente 2 (non intersezioni);
-    - tutti gli archi hanno lo stesso ``toponimo`` normalizzato;
-    - la variazione relativa di ``tgm`` tra due archi consecutivi e'
-      ``<= soglia_var_tgm`` (se entrambi i tgm sono > 0; altrimenti il
-      controllo viene saltato).
-
-    L'algoritmo parte da ogni arco non ancora visitato, lo estende prima
-    in avanti e poi all'indietro fino a che una di queste condizioni
-    fallisce. Le catene risultanti sono disgiunte e coprono tutti gli
-    archi.
+    Le catene si interrompono alle intersezioni reali (``id_nodi_intersezione``),
+    ai dead-end (grado 1), al cambio di toponimo e alla variazione di TGM
+    oltre ``soglia_var_tgm``. Per nodi grado 3+ che NON sono intersezioni
+    reali (es. confluenze carreggiate), la catena prosegue se esiste un unico
+    arco candidato con lo stesso toponimo.
     """
     arco_endpoints = indice["arco_endpoints"]
     arco_topo = indice["arco_topo"]
     arco_tgm = indice["arco_tgm"]
     nodo_grado = indice["nodo_grado"]
     nodo_archi = indice["nodo_archi"]
+    nodi_int = id_nodi_intersezione
 
     def _passabile(arco_corr: int, nodo: int) -> int | None:
         """Restituisce l'arco successivo attraverso ``nodo``, o None."""
-        if nodo_grado.get(nodo, 0) != 2:
+        grado = nodo_grado.get(nodo, 0)
+        if grado <= 1:
             return None
+
+        if nodi_int is None:
+            if grado != 2:
+                return None
+        else:
+            if nodo in nodi_int:
+                return None
+
         candidati = [a for a in nodo_archi[nodo] if a != arco_corr]
-        if len(candidati) != 1:
-            return None
-        prossimo = candidati[0]
-        if arco_topo[prossimo] is None or arco_topo[arco_corr] is None:
-            return None
-        if arco_topo[prossimo] != arco_topo[arco_corr]:
-            return None
+        topo_corr = arco_topo.get(arco_corr)
+
+        if grado == 2:
+            if len(candidati) != 1:
+                return None
+            prossimo = candidati[0]
+            if topo_corr is None or arco_topo.get(prossimo) is None:
+                return None
+            if arco_topo[prossimo] != topo_corr:
+                return None
+        else:
+            if topo_corr is None:
+                return None
+            stessi = [a for a in candidati if arco_topo.get(a) == topo_corr]
+            if len(stessi) != 1:
+                return None
+            prossimo = stessi[0]
+
         tgm_a = arco_tgm[arco_corr]
         tgm_b = arco_tgm[prossimo]
         if tgm_a > 0 and tgm_b > 0:
@@ -672,6 +703,7 @@ def costruisci_segmenti(
     soglia_var_tgm: float = 0.30,
     lung_min: float = 100.0,
     lung_max: float = 2000.0,
+    id_nodi_intersezione: set[int] | None = None,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
     """Costruisce i segmenti omogenei della rete (Task 1.1b).
 
@@ -701,7 +733,10 @@ def costruisci_segmenti(
         lung_max,
     )
     indice = _costruisci_indice_archi(gdf_rete, df_archi_nodi, df_nodi)
-    catene = _costruisci_catene(indice, soglia_var_tgm=soglia_var_tgm)
+    catene = _costruisci_catene(
+        indice, soglia_var_tgm=soglia_var_tgm,
+        id_nodi_intersezione=id_nodi_intersezione,
+    )
     log.info("Catene massimali costruite: %d", len(catene))
     segmenti = _spezza_per_lunghezza(catene, indice["arco_lung"], lung_max=lung_max)
     log.info("Segmenti dopo split per lunghezza max: %d", len(segmenti))
@@ -1198,8 +1233,11 @@ def main(config: dict[str, Any]) -> None:
     tolleranza_nodo = float(
         config.get("matching", {}).get("tolleranza_nodo", 0.5)
     )
+    filtra_incroci = config.get("matching", {}).get("filtra_falsi_incroci", True)
     gdf_intersezioni, df_archi_nodi = estrai_intersezioni(
-        gdf_rete, tolleranza_m=tolleranza_nodo
+        gdf_rete,
+        tolleranza_m=tolleranza_nodo,
+        filtra_falsi_incroci=filtra_incroci,
     )
 
     # Per la segmentazione servono anche tutti i nodi (non solo le
@@ -1230,6 +1268,7 @@ def main(config: dict[str, Any]) -> None:
     soglia_var_tgm = float(config["matching"]["soglia_variazione_tgm_segmento"])
     lung_min = float(config["matching"]["lunghezza_min_segmento"])
     lung_max = float(config["matching"]["lunghezza_max_segmento"])
+    id_nodi_int = set(gdf_intersezioni["id_nodo"].tolist())
     gdf_segmenti, _df_arco_segmento = costruisci_segmenti(
         gdf_rete,
         df_archi_nodi=df_archi_nodi,
@@ -1237,6 +1276,7 @@ def main(config: dict[str, Any]) -> None:
         soglia_var_tgm=soglia_var_tgm,
         lung_min=lung_min,
         lung_max=lung_max,
+        id_nodi_intersezione=id_nodi_int,
     )
 
     # Riassunto segmenti.
