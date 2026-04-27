@@ -6,7 +6,26 @@
 # ---------------------------------------------------------------------------
 # Periodo di analisi
 # ---------------------------------------------------------------------------
-# Per ora nessun filtro temporale: usiamo tutti gli anni disponibili.
+# Filtri di selezione degli incidenti
+# ---------------------------------------------------------------------------
+filtri:
+  # Solo incidenti con questo flag di qualita' geocodifica.
+  # Valori: "alta", "media", "bassa" oppure null per nessun filtro.
+  flag_qualita: "alta"
+  # Confine spaziale: solo incidenti dentro il Comune di Roma.
+  # Usa il convex hull della rete TomTom come proxy del confine comunale.
+  # Se il file non esiste, usa il bounding box sotto come fallback.
+  confine_da_rete: true
+  # Bounding box di fallback (UTM 33N / EPSG:32633):
+  bbox_utm:
+    x_min: 270000
+    x_max: 330000
+    y_min: 4610000
+    y_max: 4660000
+
+# ---------------------------------------------------------------------------
+# Periodo di analisi
+# ---------------------------------------------------------------------------
 # Quando i dati post-2022 saranno ri-geolocalizzati e agganciati alla rete
 # si potra' restringere il periodo principale (es. 2017-2021).
 periodo_analisi:
