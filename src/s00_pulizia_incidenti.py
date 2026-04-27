@@ -573,6 +573,68 @@ def filtra_periodo(
 
 
 # ---------------------------------------------------------------------------
+# Filtri spaziali e di qualita'
+# ---------------------------------------------------------------------------
+
+
+def filtra_qualita(
+    gdf: gpd.GeoDataFrame, flag_richiesto: str | None
+) -> gpd.GeoDataFrame:
+    """Filtra per flag di qualita' geocodifica."""
+    if flag_richiesto is None:
+        return gdf
+    if "flag_qualita" not in gdf.columns:
+        log.warning("Colonna 'flag_qualita' non trovata, filtro non applicato")
+        return gdf
+    n_prima = len(gdf)
+    gdf = gdf.loc[gdf["flag_qualita"] == flag_richiesto].copy()
+    log.info(
+        "Filtro qualita='%s': %d -> %d (%d esclusi)",
+        flag_richiesto, n_prima, len(gdf), n_prima - len(gdf),
+    )
+    return gdf
+
+
+def filtra_confine_comunale(
+    gdf: gpd.GeoDataFrame, config: dict[str, Any]
+) -> gpd.GeoDataFrame:
+    """Filtra gli incidenti che ricadono dentro il confine del Comune di Roma.
+
+    Usa il convex hull della rete TomTom come proxy del confine.
+    Se la rete non e' disponibile, usa un bounding box di fallback.
+    """
+    filtri = config.get("filtri", {})
+    usa_rete = filtri.get("confine_da_rete", False)
+    rete_path = RADICE_PROGETTO / config["paths"]["raw"]["rete_tomtom"]
+
+    confine = None
+    if usa_rete and rete_path.exists():
+        log.info("Calcolo confine comunale dal convex hull della rete TomTom...")
+        gdf_rete = gpd.read_file(rete_path)
+        if gdf_rete.crs and gdf_rete.crs != gdf.crs:
+            gdf_rete = gdf_rete.to_crs(gdf.crs)
+        confine = gdf_rete.union_all().convex_hull.buffer(200)
+    elif "bbox_utm" in filtri:
+        log.info("Confine da rete non disponibile, uso bounding box di fallback")
+        from shapely.geometry import box
+        bb = filtri["bbox_utm"]
+        confine = box(bb["x_min"], bb["y_min"], bb["x_max"], bb["y_max"])
+
+    if confine is None:
+        log.warning("Nessun confine spaziale configurato, filtro non applicato")
+        return gdf
+
+    n_prima = len(gdf)
+    mask = gdf.geometry.within(confine)
+    gdf = gdf.loc[mask].copy()
+    log.info(
+        "Filtro spaziale (confine comunale): %d -> %d (%d esclusi)",
+        n_prima, len(gdf), n_prima - len(gdf),
+    )
+    return gdf
+
+
+# ---------------------------------------------------------------------------
 # Validazione e salvataggio
 # ---------------------------------------------------------------------------
 
@@ -637,6 +699,12 @@ def pulisci(config: dict[str, Any]) -> gpd.GeoDataFrame:
         anno_inizio=periodo.get("anno_inizio"),
         anno_fine=periodo.get("anno_fine"),
     )
+
+    # Filtri di selezione (configurabili in config.yaml -> filtri).
+    filtri = config.get("filtri", {})
+    gdf = filtra_qualita(gdf, filtri.get("flag_qualita"))
+    gdf = filtra_confine_comunale(gdf, config)
+
     return gdf
 
 
