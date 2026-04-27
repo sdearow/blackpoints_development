@@ -157,6 +157,16 @@ classificazione:
   soglie_percentili: [20, 40, 60, 80]
 
 # ---------------------------------------------------------------------------
+# Correzioni empiriche ai dati sorgente
+# ---------------------------------------------------------------------------
+correzioni:
+  # Offset sistematico dei semafori rispetto alla rete TomTom (CRS metrico).
+  # Calcolato come mediana dello scostamento su 200 semafori veicolari.
+  offset_semafori_m:
+    dx: 0.9
+    dy: 6.4
+
+# ---------------------------------------------------------------------------
 # Riproducibilita'
 # ---------------------------------------------------------------------------
 random_seed: 42
