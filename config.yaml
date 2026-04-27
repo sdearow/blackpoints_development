@@ -86,12 +86,15 @@ matching:
   raggio_intersezione: 25
   # Tolleranza (metri) per considerare due endpoint di archi distinti
   # come lo stesso nodo durante l'estrazione delle intersezioni da TomTom.
-  tolleranza_nodo: 0.5
+  tolleranza_nodo: 1.5
   # Distanza massima oltre la quale un incidente viene assegnato per pura
   # vicinanza geometrica al segmento piu' vicino (metri).
-  soglia_snap_geometrica: 50
+  soglia_snap_geometrica: 30
   # Distanza massima entro cui si tenta il match toponomastico (metri).
   soglia_snap_toponomastica: 100
+  # Se true, filtra i nodi a grado 3 con un solo toponimo distinto:
+  # tipicamente confluenze di carreggiate separate, non veri incroci.
+  filtra_falsi_incroci: true
   # Variazione massima del TGM tra archetti consecutivi per appartenere
   # allo stesso segmento omogeneo.
   soglia_variazione_tgm_segmento: 0.30
@@ -155,6 +158,16 @@ classificazione:
   # Soglie percentili per le 5 fasce di priorita' (Task 4.2).
   # < 20 monitoraggio, 20-40 bassa, 40-60 media, 60-80 alta, > 80 altissima.
   soglie_percentili: [20, 40, 60, 80]
+
+# ---------------------------------------------------------------------------
+# Correzioni empiriche ai dati sorgente
+# ---------------------------------------------------------------------------
+correzioni:
+  # Offset sistematico dei semafori rispetto alla rete TomTom (CRS metrico).
+  # Calcolato come mediana dello scostamento su 200 semafori veicolari.
+  offset_semafori_m:
+    dx: 0.9
+    dy: 6.4
 
 # ---------------------------------------------------------------------------
 # Riproducibilita'

@@ -647,6 +647,17 @@ def prepara_semafori(config: dict[str, Any]) -> gpd.GeoDataFrame:
 
     crs_target = config["crs"]["metrico"]
     gdf = riproietta(gdf, crs_target=crs_target)
+
+    # Correzione offset sistematico rispetto alla rete TomTom.
+    # Calcolato empiricamente: mediana dello scostamento (dx, dy) tra
+    # semafori e punto piu' vicino sulla rete = (0.9, 6.4) m.
+    offset = config.get("correzioni", {}).get("offset_semafori_m")
+    if offset:
+        dx = float(offset.get("dx", 0))
+        dy = float(offset.get("dy", 0))
+        gdf["geometry"] = gdf.geometry.translate(xoff=dx, yoff=dy)
+        log.info("Applicata correzione offset semafori: dx=%.1f m, dy=%.1f m", dx, dy)
+
     return gdf
 
 

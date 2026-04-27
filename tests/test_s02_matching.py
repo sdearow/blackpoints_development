@@ -206,6 +206,101 @@ def test_estrai_intersezioni_rete_a_T():
     assert gdf_int.iloc[0].geometry.y == pytest.approx(0.0)
 
 
+def test_estrai_intersezioni_filtra_falsi_incroci_stesso_toponimo():
+    """Un nodo grado 3 con tutti gli archi dello stesso toponimo (es.
+    confluenza carreggiate) viene filtrato come falso incrocio."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2, 3], dtype="Int64"),
+            "toponimo": ["Via Roma", "Via Roma", "Via Roma"],
+        },
+        geometry=[
+            LineString([(0, 0), (100, 0)]),
+            LineString([(100, 0), (200, 0)]),
+            LineString([(100, 0), (100, 100)]),
+        ],
+        crs="EPSG:32633",
+    )
+    gdf_int, _ = estrai_intersezioni(gdf, tolleranza_m=0.5, filtra_falsi_incroci=True)
+    assert len(gdf_int) == 0
+
+    gdf_int_no, _ = estrai_intersezioni(gdf, tolleranza_m=0.5, filtra_falsi_incroci=False)
+    assert len(gdf_int_no) == 1
+
+
+def test_estrai_intersezioni_non_filtra_grado_4_stesso_toponimo():
+    """Nodi a grado >= 4 non vengono mai filtrati, anche con un solo toponimo."""
+    gdf = _gdf_rete_a_croce()
+    gdf["toponimo"] = ["Via Roma", "Via Roma", "Via Roma", "Via Roma"]
+    gdf_int, _ = estrai_intersezioni(gdf, tolleranza_m=0.5, filtra_falsi_incroci=True)
+    assert len(gdf_int) == 1
+
+
+def test_costruisci_segmenti_attraversa_falso_incrocio():
+    """Se un nodo grado-3 non e' nell'insieme intersezioni, la catena puo'
+    attraversarlo quando c'e' un unico candidato con lo stesso toponimo
+    (es. strada principale + spur senza nome)."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2, 3], dtype="Int64"),
+            "toponimo": ["Via Roma", "Via Roma", None],
+            "tgm": [1000.0, 1000.0, 500.0],
+            "lunghezza_m": [100.0, 100.0, 80.0],
+        },
+        geometry=[
+            LineString([(0, 0), (100, 0)]),
+            LineString([(100, 0), (200, 0)]),
+            LineString([(100, 0), (100, 80)]),
+        ],
+        crs="EPSG:32633",
+    )
+    gdf_int, df_archi_nodi = estrai_intersezioni(
+        gdf, tolleranza_m=0.5, filtra_falsi_incroci=True
+    )
+    assert len(gdf_int) == 0
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi,
+        soglia_var_tgm=0.30, lung_min=100, lung_max=2000,
+        id_nodi_intersezione=set(),
+    )
+    lunghezze = sorted(gdf_seg["lunghezza_m"].tolist())
+    assert lunghezze == pytest.approx([80.0, 200.0])
+
+
+def test_costruisci_segmenti_non_attraversa_se_ambiguo():
+    """Se al nodo falso incrocio ci sono 2 candidati con lo stesso toponimo,
+    la catena si interrompe (ambiguita': non sappiamo quale e' la
+    continuazione della strada principale)."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "id_arco": pd.array([1, 2, 3], dtype="Int64"),
+            "toponimo": ["Via Roma", "Via Roma", "Via Roma"],
+            "tgm": [1000.0, 1000.0, 500.0],
+            "lunghezza_m": [100.0, 100.0, 80.0],
+        },
+        geometry=[
+            LineString([(0, 0), (100, 0)]),
+            LineString([(100, 0), (200, 0)]),
+            LineString([(100, 0), (100, 80)]),
+        ],
+        crs="EPSG:32633",
+    )
+    gdf_int, df_archi_nodi = estrai_intersezioni(
+        gdf, tolleranza_m=0.5, filtra_falsi_incroci=True
+    )
+    assert len(gdf_int) == 0
+    df_ep = estrai_endpoint_archi(gdf)
+    df_nodi, _ = costruisci_nodi(df_ep, tolleranza_m=0.5)
+    gdf_seg, _ = costruisci_segmenti(
+        gdf, df_archi_nodi, df_nodi,
+        soglia_var_tgm=0.30, lung_min=100, lung_max=2000,
+        id_nodi_intersezione=set(),
+    )
+    assert len(gdf_seg) == 3
+
+
 # ---------------------------------------------------------------------------
 # associa_semafori
 # ---------------------------------------------------------------------------
