@@ -95,6 +95,8 @@ def prepara_dataset_segmenti(
         "classe_frc",
         "pgtu_classifica",
         "grande_viabilita",
+        "is_extraurbana_cdr",
+        "is_extraurbana_altri_enti",
         "isolato",
     ]
     cols_seg = [c for c in cols_seg if c in gdf_segmenti.columns]
@@ -474,10 +476,32 @@ def main(config: dict[str, Any]) -> None:
     log.info("Caricamento rete da %s", rete_path)
     gdf_rete = gpd.read_file(rete_path, layer="rete_prep")
 
-    # --- n_anni: anni distinti degli incidenti abbinati ---
+    # --- Filtro temporale sugli incidenti ---
+    anni_sel = config.get("spf", {}).get("anni_incidenti")
+    if anni_sel:
+        n_prima = len(gdf_matched)
+        gdf_matched = gdf_matched.loc[gdf_matched["anno"].isin(anni_sel)].copy()
+        log.info(
+            "Filtro temporale: anni %s -> %d incidenti (da %d)",
+            anni_sel, len(gdf_matched), n_prima,
+        )
+
+    # --- n_anni: numero di anni selezionati ---
     abbinati = gdf_matched.loc[gdf_matched["match_type"] != "non_abbinato"]
     n_anni = float(abbinati["anno"].nunique())
     log.info("Anni distinti con incidenti abbinati: %d", int(n_anni))
+
+    # --- Esclusione segmenti di altri enti ---
+    if "is_extraurbana_altri_enti" in gdf_segmenti.columns:
+        n_altri = int(gdf_segmenti["is_extraurbana_altri_enti"].fillna(False).sum())
+        if n_altri > 0:
+            gdf_segmenti = gdf_segmenti.loc[
+                ~gdf_segmenti["is_extraurbana_altri_enti"].fillna(False)
+            ].copy()
+            log.info(
+                "Esclusi %d segmenti di altri enti (autostrade, ANAS, ecc.)",
+                n_altri,
+            )
 
     # --- Task 2.1: preparazione dataset ---
     log.info("=== Task 2.1: preparazione dataset ===")
@@ -497,11 +521,38 @@ def main(config: dict[str, Any]) -> None:
         int(df_int["n_incidenti"].sum()),
     )
 
-    # --- Task 2.3: accorpamento categorie piccole ---
+    # --- Task 2.3: categorizzazione e accorpamento ---
     min_siti = int(config["spf"]["min_siti_per_categoria"])
 
     log.info("=== Task 2.3: accorpamento categorie ===")
-    df_seg = accorpa_categorie(df_seg, "pgtu_classifica", min_siti)
+
+    # Assegna categoria SPF ai segmenti.
+    # Priorita': extraurbana_cdr > pgtu_classifica > LOCALE (ex-ALTRO).
+    def _categoria_segmento(row: pd.Series) -> str:
+        if row.get("is_extraurbana_cdr", False):
+            return "EXTRAURBANA"
+        pgtu = row.get("pgtu_classifica")
+        if pd.notna(pgtu) and str(pgtu).strip():
+            cat = str(pgtu).strip().upper()
+            if cat == "S":
+                return "IQ"
+            return cat
+        return "LOCALE"
+
+    if "is_extraurbana_cdr" in df_seg.columns:
+        df_seg["categoria_spf"] = df_seg.apply(_categoria_segmento, axis=1)
+    else:
+        df_seg = accorpa_categorie(df_seg, "pgtu_classifica", min_siti)
+        df_seg.loc[df_seg["categoria_spf"] == "S", "categoria_spf"] = "IQ"
+        df_seg["categoria_spf"] = df_seg["categoria_spf"].replace("ALTRO", "LOCALE")
+
+    # Accorpa categorie troppo piccole in LOCALE.
+    conteggi = df_seg["categoria_spf"].value_counts()
+    piccole = set(conteggi[conteggi < min_siti].index) - {"LOCALE"}
+    if piccole:
+        log.info("Categorie accorpate in LOCALE (< %d siti): %s", min_siti, sorted(piccole))
+        df_seg.loc[df_seg["categoria_spf"].isin(piccole), "categoria_spf"] = "LOCALE"
+
     log.info(
         "Categorie segmenti: %s",
         df_seg["categoria_spf"].value_counts().to_dict(),

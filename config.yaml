@@ -64,6 +64,10 @@ paths:
     # joinati spazialmente sugli archi TomTom.
     rete_pgtu: "data/raw/2a.PGTU_Grafo_2026.geojson"
     semafori: "data/raw/semafori.gpkg"
+    # Strade extraurbane del Comune di Roma -> categoria SPF "EXTRAURBANA".
+    strade_extraurbane_cdr: "data/raw/Strade_Extraurbane_CdR.geojson"
+    # Strade gestite da altri enti (autostrade, ANAS, ecc.) -> escluse dalla SPF.
+    strade_extraurbane_altri_enti: "data/raw/Strade_Extraurbane_Altri_Enti.geojson"
   interim:
     incidenti_clean: "data/interim/incidenti_clean.gpkg"
     rete_tomtom_prep: "data/interim/rete_tomtom_prep.gpkg"
@@ -123,6 +127,9 @@ spf:
   covariate_intersezioni_estese: ["log_flusso_entrante", "n_bracci"]
   # Numero minimo di siti per categoria sotto cui si accorpano le categorie.
   min_siti_per_categoria: 50
+  # Anni da usare per il conteggio incidenti nella SPF.
+  # null = tutti gli anni disponibili.
+  anni_incidenti: [2018, 2019, 2020, 2021]
 
 # ---------------------------------------------------------------------------
 # Fase 3 - Empirical Bayes ed EPDO

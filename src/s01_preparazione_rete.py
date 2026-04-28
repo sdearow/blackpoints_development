@@ -456,6 +456,68 @@ def joina_pgtu(
     return gdf_out
 
 
+def classifica_extraurbane(
+    gdf_rete: gpd.GeoDataFrame,
+    config: dict[str, Any],
+    raggio_m: float = 30.0,
+) -> gpd.GeoDataFrame:
+    """Classifica gli archi TomTom come extraurbane CdR o altri enti.
+
+    Per ogni arco TomTom calcola il midpoint e verifica se ricade entro
+    ``raggio_m`` da una geometria nei due GeoJSON.  Aggiunge le colonne
+    booleane ``is_extraurbana_cdr`` e ``is_extraurbana_altri_enti``.
+    Se i file non esistono le colonne vengono inizializzate a False.
+    """
+    gdf_out = gdf_rete.copy()
+    gdf_out["is_extraurbana_cdr"] = False
+    gdf_out["is_extraurbana_altri_enti"] = False
+
+    paths_raw = config.get("paths", {}).get("raw", {})
+
+    for chiave, colonna in [
+        ("strade_extraurbane_cdr", "is_extraurbana_cdr"),
+        ("strade_extraurbane_altri_enti", "is_extraurbana_altri_enti"),
+    ]:
+        rel = paths_raw.get(chiave)
+        if not rel:
+            continue
+        percorso = RADICE_PROGETTO / rel
+        if not percorso.exists():
+            log.warning("File %s non trovato: %s — salto classificazione", chiave, percorso)
+            continue
+
+        gdf_ext = gpd.read_file(percorso)
+        log.info("Caricato %s: %d geometrie, CRS %s", chiave, len(gdf_ext), gdf_ext.crs)
+        if gdf_ext.crs != gdf_out.crs:
+            gdf_ext = gdf_ext.to_crs(gdf_out.crs)
+
+        midpoints = gdf_out.geometry.apply(_midpoint_linestring)
+        gdf_mid = gpd.GeoDataFrame(
+            {"_idx": gdf_out.index},
+            geometry=list(midpoints),
+            crs=gdf_out.crs,
+            index=gdf_out.index,
+        )
+
+        joined = gpd.sjoin_nearest(
+            gdf_mid,
+            gdf_ext[["geometry"]],
+            how="left",
+            max_distance=raggio_m,
+            distance_col="_dist",
+        )
+        joined = joined[~joined.index.duplicated(keep="first")]
+        matchati = joined["_dist"].notna()
+        gdf_out.loc[matchati, colonna] = True
+        n_match = int(matchati.sum())
+        log.info(
+            "Classificazione %s: %d archi su %d (raggio %.0f m)",
+            colonna, n_match, len(gdf_out), raggio_m,
+        )
+
+    return gdf_out
+
+
 # ---------------------------------------------------------------------------
 # Riassunto e salvataggio
 # ---------------------------------------------------------------------------
@@ -686,6 +748,9 @@ def prepara(config: dict[str, Any]) -> gpd.GeoDataFrame:
     gdf_pgtu = carica_pgtu(percorso_pgtu)
     raggio_pgtu = float(config["matching"]["raggio_associazione_pgtu"])
     gdf = joina_pgtu(gdf, gdf_pgtu, raggio_m=raggio_pgtu)
+
+    # Classificazione strade extraurbane (CdR e altri enti).
+    gdf = classifica_extraurbane(gdf, config, raggio_m=raggio_pgtu)
 
     return gdf
 

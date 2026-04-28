@@ -797,6 +797,16 @@ def costruisci_segmenti(
             if "linea_atac" in sub.columns
             else False
         )
+        extraurbana_cdr = (
+            bool(sub["is_extraurbana_cdr"].fillna(False).astype(bool).any())
+            if "is_extraurbana_cdr" in sub.columns
+            else False
+        )
+        extraurbana_altri_enti = (
+            bool(sub["is_extraurbana_altri_enti"].fillna(False).astype(bool).any())
+            if "is_extraurbana_altri_enti" in sub.columns
+            else False
+        )
 
         nodo_start, nodo_end = _estremi_catena(catena, arco_endpoints)
         grado_start = int(nodo_grado.get(nodo_start, 0))
@@ -822,6 +832,8 @@ def costruisci_segmenti(
                 "pgtu_tpl": pgtu_tpl,
                 "grande_viabilita": grande_viab,
                 "linea_atac": linea_atac,
+                "is_extraurbana_cdr": extraurbana_cdr,
+                "is_extraurbana_altri_enti": extraurbana_altri_enti,
                 "id_nodo_start": int(nodo_start),
                 "id_nodo_end": int(nodo_end),
                 "grado_start": grado_start,
