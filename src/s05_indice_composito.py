@@ -179,8 +179,8 @@ def classifica_matrice(df: pd.DataFrame) -> pd.Series:
     """
     med_excess = df["A"].median()
     med_sev = df["B"].median()
-    alto_exc = df["A"] >= med_excess
-    alto_sev = df["B"] >= med_sev
+    alto_exc = df["A"] > med_excess
+    alto_sev = df["B"] > med_sev
 
     quadrante = pd.Series("Q4_monitoraggio", index=df.index)
     quadrante[alto_exc & alto_sev] = "Q1_intervento_urgente"
