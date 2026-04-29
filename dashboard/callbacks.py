@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import traceback
 from typing import Any
 
 import numpy as np
@@ -9,9 +11,15 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import Input, Output, State, html, dash_table
 from dash.exceptions import PreventUpdate
-from scipy import stats as sp_stats
+
+try:
+    from scipy import stats as sp_stats
+except ImportError:
+    sp_stats = None
 
 from dashboard.layouts import COLORI_FASCE, ORDINE_FASCE
+
+log = logging.getLogger("dashboard.callbacks")
 
 _SFONDO = "#1e1e2e"
 _TESTO = "#cdd6f4"
@@ -23,6 +31,9 @@ _LAYOUT_BASE = dict(
     font_color=_TESTO,
     margin=dict(l=40, r=20, t=20, b=40),
 )
+
+_ScatterMap = getattr(go, "Scattermap", None) or getattr(go, "Scattermapbox", None)
+_MAP_KEY = "map" if hasattr(go, "Scattermap") else "mapbox"
 
 
 def _figura_vuota(messaggio: str = "") -> go.Figure:
@@ -74,48 +85,69 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Input("slider-top-n", "value"),
     )
     def aggiorna_mappa(tipi, fasce, top_n):
-        mask = df["tipo_sito"].isin(tipi or []) & df["fascia_priorita"].isin(fasce or [])
-        sub = df.loc[mask].nlargest(top_n, "ICP")
-        fig = go.Figure()
-        for fascia in ORDINE_FASCE:
-            if fascia not in (fasce or []):
-                continue
-            pf = sub[sub["fascia_priorita"] == fascia]
-            if pf.empty:
-                continue
-            seg = pf[pf["tipo_sito"] == "segmento"]
-            if not seg.empty and "segmento" in (tipi or []):
-                fig.add_trace(go.Scattermap(
-                    lat=seg["lat"], lon=seg["lon"], mode="markers",
-                    marker=dict(size=6, color=COLORI_FASCE[fascia], opacity=0.8),
-                    text=seg.apply(
-                        lambda r: f"<b>{r.get('toponimo','')}</b><br>"
-                                  f"ICP: {r['ICP']:.1f} | {fascia}<br>"
-                                  f"Inc: {int(r.get('n_incidenti',0))}", axis=1),
-                    hoverinfo="text", name=f"Seg. {fascia}", customdata=seg.index,
-                ))
-            inter = pf[pf["tipo_sito"] == "intersezione"]
-            if not inter.empty and "intersezione" in (tipi or []):
-                fig.add_trace(go.Scattermap(
-                    lat=inter["lat"], lon=inter["lon"], mode="markers",
-                    marker=dict(size=8, color=COLORI_FASCE[fascia], opacity=0.9,
-                                line=dict(width=1, color="#11111b")),
-                    text=inter.apply(
-                        lambda r: f"<b>Int. #{int(r.get('id_nodo',0))}</b><br>"
-                                  f"ICP: {r['ICP']:.1f} | {fascia}<br>"
-                                  f"Inc: {int(r.get('n_incidenti',0))}", axis=1),
-                    hoverinfo="text", name=f"Int. {fascia}", customdata=inter.index,
-                ))
-        fig.update_layout(
-            **_LAYOUT_BASE,
-            map=dict(style="open-street-map",
-                     center=dict(lat=41.9028, lon=12.4964), zoom=11),
-            margin=dict(l=0, r=0, t=0, b=0),
-            legend=dict(bgcolor="#11111b", font=dict(color=_TESTO, size=10),
-                        x=0.01, y=0.99, xanchor="left", yanchor="top"),
-            showlegend=True, uirevision="mappa",
-        )
-        return fig
+        try:
+            mask = df["tipo_sito"].isin(tipi or []) & df["fascia_priorita"].isin(fasce or [])
+            sub = df.loc[mask].nlargest(top_n, "ICP")
+            fig = go.Figure()
+
+            for fascia in ORDINE_FASCE:
+                if fascia not in (fasce or []):
+                    continue
+                pf = sub[sub["fascia_priorita"] == fascia]
+                if pf.empty:
+                    continue
+
+                seg = pf[pf["tipo_sito"] == "segmento"]
+                if not seg.empty and "segmento" in (tipi or []):
+                    hover = [
+                        f"<b>{t}</b><br>ICP: {icp:.1f} | {fascia}<br>Inc: {int(n)}"
+                        for t, icp, n in zip(
+                            seg.get("toponimo", pd.Series("", index=seg.index)),
+                            seg["ICP"], seg.get("n_incidenti", pd.Series(0, index=seg.index)))
+                    ]
+                    fig.add_trace(_ScatterMap(
+                        lat=seg["lat"].values, lon=seg["lon"].values,
+                        mode="markers",
+                        marker=dict(size=6, color=COLORI_FASCE[fascia], opacity=0.8),
+                        text=hover, hoverinfo="text",
+                        name=f"Seg. {fascia}", customdata=seg.index.tolist(),
+                    ))
+
+                inter = pf[pf["tipo_sito"] == "intersezione"]
+                if not inter.empty and "intersezione" in (tipi or []):
+                    hover = [
+                        f"<b>Int. #{int(nid)}</b><br>ICP: {icp:.1f} | {fascia}<br>Inc: {int(n)}"
+                        for nid, icp, n in zip(
+                            inter.get("id_nodo", pd.Series(0, index=inter.index)),
+                            inter["ICP"], inter.get("n_incidenti", pd.Series(0, index=inter.index)))
+                    ]
+                    fig.add_trace(_ScatterMap(
+                        lat=inter["lat"].values, lon=inter["lon"].values,
+                        mode="markers",
+                        marker=dict(size=8, color=COLORI_FASCE[fascia], opacity=0.9,
+                                    line=dict(width=1, color="#11111b")),
+                        text=hover, hoverinfo="text",
+                        name=f"Int. {fascia}", customdata=inter.index.tolist(),
+                    ))
+
+            layout_map = {
+                _MAP_KEY: dict(
+                    style="open-street-map",
+                    center=dict(lat=41.9028, lon=12.4964),
+                    zoom=11,
+                ),
+            }
+            fig.update_layout(
+                **_LAYOUT_BASE, **layout_map,
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(bgcolor="#11111b", font=dict(color=_TESTO, size=10),
+                            x=0.01, y=0.99, xanchor="left", yanchor="top"),
+                showlegend=True, uirevision="mappa",
+            )
+            return fig
+        except Exception:
+            log.error("Errore in aggiorna_mappa:\n%s", traceback.format_exc())
+            return _figura_vuota("Errore nel rendering della mappa")
 
     # ==================================================================
     # Callback 3: sito selezionato
@@ -146,61 +178,70 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             v = _figura_vuota("Nessun sito selezionato")
             return [_msg_placeholder("Seleziona un sito sulla mappa.")], v, v
 
-        fascia = sito.get("fascia_priorita", "")
-        colore = COLORI_FASCE.get(fascia, _TESTO)
-        nome = sito.get("toponimo") or f"Intersezione #{sito.get('id_nodo','')}"
-        icp = sito.get("ICP", 0)
-        tipo = sito.get("tipo_sito", "")
+        try:
+            fascia = sito.get("fascia_priorita", "")
+            colore = COLORI_FASCE.get(fascia, _TESTO)
+            nome = sito.get("toponimo") or f"Intersezione #{sito.get('id_nodo','')}"
+            icp = sito.get("ICP", 0)
+            tipo = sito.get("tipo_sito", "")
 
-        header = [
-            html.Div([
-                html.Span(fascia.upper(),
-                          style={"backgroundColor": colore, "color": "#11111b",
-                                 "borderRadius": "4px", "padding": "2px 8px",
-                                 "fontSize": "11px", "fontWeight": "700"}),
-                html.Span(f"  ICP: {icp:.1f}",
-                          style={"color": _TESTO, "fontSize": "13px", "marginLeft": "8px"}),
-            ], style={"marginBottom": "8px"}),
-            html.P(nome, style={"color": _TESTO, "fontWeight": "600",
-                                "fontSize": "14px", "margin": "0"}),
-            html.P(f"{tipo.capitalize()} | Inc: {int(sito.get('n_incidenti',0))} | "
-                   f"Costo: {sito.get('costo_sociale_eccesso_eur',0):,.0f} EUR",
-                   style={"color": "#6c7086", "fontSize": "12px", "margin": "4px 0 0 0"}),
-        ]
+            header = [
+                html.Div([
+                    html.Span(fascia.upper(),
+                              style={"backgroundColor": colore, "color": "#11111b",
+                                     "borderRadius": "4px", "padding": "2px 8px",
+                                     "fontSize": "11px", "fontWeight": "700"}),
+                    html.Span(f"  ICP: {icp:.1f}",
+                              style={"color": _TESTO, "fontSize": "13px",
+                                     "marginLeft": "8px"}),
+                ], style={"marginBottom": "8px"}),
+                html.P(nome, style={"color": _TESTO, "fontWeight": "600",
+                                    "fontSize": "14px", "margin": "0"}),
+                html.P(f"{tipo.capitalize()} | Inc: {int(sito.get('n_incidenti',0))} | "
+                       f"Costo: {sito.get('costo_sociale_eccesso_eur',0):,.0f} EUR",
+                       style={"color": "#6c7086", "fontSize": "12px",
+                              "margin": "4px 0 0 0"}),
+            ]
 
-        vals = [sito.get("A_norm", 0), sito.get("B_norm", 0),
-                sito.get("C_norm", 0), sito.get("D_norm", 0)]
-        labs = ["Eccesso EB", "Severita'", "Vulnerabilita'", "Disp. vel."]
-        fig_r = go.Figure()
-        fig_r.add_trace(go.Scatterpolar(
-            r=vals + [vals[0]], theta=labs + [labs[0]], fill="toself",
-            fillcolor="rgba(231,76,60,0.25)", line=dict(color="#e74c3c", width=2), name="Sito"))
-        fig_r.add_trace(go.Scatterpolar(
-            r=[50]*5, theta=labs + [labs[0]],
-            line=dict(color="#6c7086", width=1, dash="dot"), name="Media"))
-        fig_r.update_layout(
-            **_LAYOUT_BASE,
-            polar=dict(bgcolor=_SFONDO,
-                       radialaxis=dict(range=[0, 100], gridcolor=_GRIGLIA,
-                                       tickfont=dict(size=9, color="#6c7086")),
-                       angularaxis=dict(gridcolor=_GRIGLIA,
-                                        tickfont=dict(size=10, color=_TESTO))),
-            showlegend=True, legend=dict(font=dict(size=9, color=_TESTO), bgcolor=_SFONDO),
-            margin=dict(l=30, r=30, t=20, b=20),
-        )
+            vals = [sito.get("A_norm", 0), sito.get("B_norm", 0),
+                    sito.get("C_norm", 0), sito.get("D_norm", 0)]
+            labs = ["Eccesso EB", "Severita'", "Vulnerabilita'", "Disp. vel."]
+            fig_r = go.Figure()
+            fig_r.add_trace(go.Scatterpolar(
+                r=vals + [vals[0]], theta=labs + [labs[0]], fill="toself",
+                fillcolor="rgba(231,76,60,0.25)",
+                line=dict(color="#e74c3c", width=2), name="Sito"))
+            fig_r.add_trace(go.Scatterpolar(
+                r=[50]*5, theta=labs + [labs[0]],
+                line=dict(color="#6c7086", width=1, dash="dot"), name="Media"))
+            fig_r.update_layout(
+                **_LAYOUT_BASE,
+                polar=dict(bgcolor=_SFONDO,
+                           radialaxis=dict(range=[0, 100], gridcolor=_GRIGLIA,
+                                           tickfont=dict(size=9, color="#6c7086")),
+                           angularaxis=dict(gridcolor=_GRIGLIA,
+                                            tickfont=dict(size=10, color=_TESTO))),
+                showlegend=True,
+                legend=dict(font=dict(size=9, color=_TESTO), bgcolor=_SFONDO),
+                margin=dict(l=30, r=30, t=20, b=20),
+            )
 
-        grav = {"Mortali": int(sito.get("n_mortali", 0)),
-                "Feriti gravi": int(sito.get("n_feriti_gravi", 0)),
-                "Feriti lievi": int(sito.get("n_feriti_lievi", 0)),
-                "Solo danni": int(sito.get("n_solo_danni", 0))}
-        fig_b = go.Figure(go.Bar(
-            x=list(grav.values()), y=list(grav.keys()), orientation="h",
-            marker_color=["#8b0000", "#e74c3c", "#e67e22", "#f1c40f"]))
-        fig_b.update_layout(**_LAYOUT_BASE,
-                            xaxis=dict(gridcolor=_GRIGLIA, tickfont=dict(size=10)),
-                            yaxis=dict(tickfont=dict(size=10)),
-                            margin=dict(l=80, r=20, t=10, b=30))
-        return header, fig_r, fig_b
+            grav = {"Mortali": int(sito.get("n_mortali", 0)),
+                    "Feriti gravi": int(sito.get("n_feriti_gravi", 0)),
+                    "Feriti lievi": int(sito.get("n_feriti_lievi", 0)),
+                    "Solo danni": int(sito.get("n_solo_danni", 0))}
+            fig_b = go.Figure(go.Bar(
+                x=list(grav.values()), y=list(grav.keys()), orientation="h",
+                marker_color=["#8b0000", "#e74c3c", "#e67e22", "#f1c40f"]))
+            fig_b.update_layout(**_LAYOUT_BASE,
+                                xaxis=dict(gridcolor=_GRIGLIA, tickfont=dict(size=10)),
+                                yaxis=dict(tickfont=dict(size=10)),
+                                margin=dict(l=80, r=20, t=10, b=30))
+            return header, fig_r, fig_b
+        except Exception:
+            log.error("Errore in aggiorna_dettaglio:\n%s", traceback.format_exc())
+            v = _figura_vuota("Errore")
+            return [_msg_placeholder("Errore nel dettaglio.")], v, v
 
     # ==================================================================
     # Callback 5: Tab SPF — dropdown categorie
@@ -227,95 +268,104 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Input("spf-categoria", "value"),
     )
     def aggiorna_spf(tipo, categorie):
-        sub = df[df["tipo_sito"] == tipo].copy()
-        col_cat = "spf_categoria" if "spf_categoria" in sub.columns else "categoria_spf"
-        if categorie:
-            sub = sub[sub[col_cat].isin(categorie)]
-        sub = sub[sub["E_i"].notna() & (sub["E_i"] > 0)].copy()
+        try:
+            sub = df[df["tipo_sito"] == tipo].copy()
+            col_cat = "spf_categoria" if "spf_categoria" in sub.columns else "categoria_spf"
+            if categorie:
+                sub = sub[sub[col_cat].isin(categorie)]
+            sub = sub[sub["E_i"].notna() & (sub["E_i"] > 0)].copy()
 
-        if sub.empty:
-            v = _figura_vuota("Nessun dato")
-            return v, v, v, _msg_placeholder("Nessun dato.")
+            if sub.empty:
+                v = _figura_vuota("Nessun dato")
+                return v, v, v, _msg_placeholder("Nessun dato.")
 
-        # --- Binned O vs E ---
-        sub["E_bin"] = pd.qcut(sub["E_i"], q=min(20, max(5, len(sub) // 200)),
-                               duplicates="drop")
-        binned = sub.groupby("E_bin", observed=True).agg(
-            E_media=("E_i", "mean"), O_media=("n_incidenti", "mean"),
-            n_siti=("n_incidenti", "count")).reset_index()
-
-        fig_oe = go.Figure()
-        e_max = max(binned["E_media"].max(), binned["O_media"].max()) * 1.1
-        fig_oe.add_trace(go.Scatter(
-            x=[0, e_max], y=[0, e_max], mode="lines",
-            line=dict(color="#6c7086", dash="dash", width=1), name="Bisettrice"))
-
-        cats_uniche = sub[col_cat].unique()
-        colori_cat = ["#89b4fa", "#f38ba8", "#a6e3a1", "#fab387",
-                      "#cba6f7", "#94e2d5", "#f9e2af"]
-        for i, cat in enumerate(sorted(cats_uniche)):
-            sc = sub[sub[col_cat] == cat]
-            b = sc.groupby("E_bin", observed=True).agg(
+            n_bins = min(20, max(5, len(sub) // 200))
+            sub["E_bin"] = pd.qcut(sub["E_i"], q=n_bins, duplicates="drop")
+            binned = sub.groupby("E_bin", observed=True).agg(
                 E_media=("E_i", "mean"), O_media=("n_incidenti", "mean"),
-                n=("n_incidenti", "count")).reset_index()
+                n_siti=("n_incidenti", "count")).reset_index()
+
+            fig_oe = go.Figure()
+            e_max = max(binned["E_media"].max(), binned["O_media"].max()) * 1.1
             fig_oe.add_trace(go.Scatter(
-                x=b["E_media"], y=b["O_media"], mode="markers+lines",
-                marker=dict(size=b["n"].clip(upper=200) / b["n"].max() * 14 + 4,
-                            color=colori_cat[i % len(colori_cat)], opacity=0.8),
-                line=dict(color=colori_cat[i % len(colori_cat)], width=1),
-                name=cat, text=b["n"].apply(lambda v: f"n={v}"), hoverinfo="text+x+y"))
+                x=[0, e_max], y=[0, e_max], mode="lines",
+                line=dict(color="#6c7086", dash="dash", width=1), name="Bisettrice"))
 
-        fig_oe.update_layout(**_LAYOUT_BASE,
-                             xaxis=dict(title="E (predetto SPF)", gridcolor=_GRIGLIA),
-                             yaxis=dict(title="O (osservato medio)", gridcolor=_GRIGLIA))
+            cats_uniche = sorted(sub[col_cat].unique())
+            colori_cat = ["#89b4fa", "#f38ba8", "#a6e3a1", "#fab387",
+                          "#cba6f7", "#94e2d5", "#f9e2af"]
+            for i, cat in enumerate(cats_uniche):
+                sc = sub[sub[col_cat] == cat]
+                b = sc.groupby("E_bin", observed=True).agg(
+                    E_media=("E_i", "mean"), O_media=("n_incidenti", "mean"),
+                    n=("n_incidenti", "count")).reset_index()
+                sz = (b["n"] / b["n"].max() * 14 + 4).clip(upper=20)
+                fig_oe.add_trace(go.Scatter(
+                    x=b["E_media"], y=b["O_media"], mode="markers+lines",
+                    marker=dict(size=sz, color=colori_cat[i % len(colori_cat)],
+                                opacity=0.8),
+                    line=dict(color=colori_cat[i % len(colori_cat)], width=1),
+                    name=cat, text=[f"n={v}" for v in b["n"]],
+                    hoverinfo="text+x+y"))
 
-        # --- Residui di Pearson ---
-        k = sub["k_spf"].clip(lower=1e-9)
-        var_nb = sub["E_i"] + sub["E_i"] ** 2 * k
-        residui = (sub["n_incidenti"] - sub["E_i"]) / np.sqrt(var_nb.clip(lower=1e-9))
-        residui = residui.replace([np.inf, -np.inf], np.nan).dropna()
-        residui_clip = residui.clip(-5, 5)
+            fig_oe.update_layout(**_LAYOUT_BASE,
+                                 xaxis=dict(title="E (predetto SPF)", gridcolor=_GRIGLIA),
+                                 yaxis=dict(title="O (osservato medio)", gridcolor=_GRIGLIA))
 
-        fig_res = go.Figure()
-        fig_res.add_trace(go.Histogram(
-            x=residui_clip, nbinsx=60,
-            marker_color="#89b4fa", opacity=0.7, name="Residui"))
-        fig_res.add_vline(x=0, line_dash="dash", line_color="#6c7086")
-        fig_res.update_layout(**_LAYOUT_BASE,
-                              xaxis=dict(title="Residuo di Pearson", gridcolor=_GRIGLIA),
-                              yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA))
+            # Residui di Pearson
+            k = sub["k_spf"].clip(lower=1e-9)
+            var_nb = sub["E_i"] + sub["E_i"] ** 2 * k
+            residui = (sub["n_incidenti"] - sub["E_i"]) / np.sqrt(var_nb.clip(lower=1e-9))
+            residui = residui.replace([np.inf, -np.inf], np.nan).dropna().clip(-5, 5)
 
-        # --- Istogramma incidenti ---
-        fig_hist = go.Figure()
-        inc_clip = sub["n_incidenti"].clip(upper=sub["n_incidenti"].quantile(0.99))
-        fig_hist.add_trace(go.Histogram(
-            x=inc_clip, nbinsx=50, marker_color="#a6e3a1", opacity=0.7))
-        fig_hist.update_layout(**_LAYOUT_BASE,
-                               xaxis=dict(title="N. incidenti per sito", gridcolor=_GRIGLIA),
-                               yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA, type="log"))
+            fig_res = go.Figure()
+            fig_res.add_trace(go.Histogram(x=residui, nbinsx=60,
+                                           marker_color="#89b4fa", opacity=0.7))
+            fig_res.add_vline(x=0, line_dash="dash", line_color="#6c7086")
+            fig_res.update_layout(**_LAYOUT_BASE,
+                                  xaxis=dict(title="Residuo di Pearson", gridcolor=_GRIGLIA),
+                                  yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA))
 
-        # --- Riepilogo modelli ---
-        righe_mod = []
-        for cat in sorted(cats_uniche):
-            sc = sub[sub[col_cat] == cat]
-            righe_mod.append({
-                "Categoria": cat,
-                "N siti": len(sc),
-                "Inc. totali": int(sc["n_incidenti"].sum()),
-                "k (sovradisp.)": f"{sc['k_spf'].iloc[0]:.4f}" if len(sc) > 0 else "-",
-                "E medio": f"{sc['E_i'].mean():.2f}",
-                "O medio": f"{sc['n_incidenti'].mean():.2f}",
-            })
-        tab_mod = dash_table.DataTable(
-            data=righe_mod,
-            columns=[{"name": k, "id": k} for k in righe_mod[0].keys()] if righe_mod else [],
-            style_header={"backgroundColor": "#313244", "color": _TESTO,
-                          "fontWeight": "600", "fontSize": "11px", "border": "none"},
-            style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
-                        "fontSize": "11px", "border": f"1px solid {_GRIGLIA}",
-                        "padding": "4px 8px"},
-        )
-        return fig_oe, fig_res, fig_hist, tab_mod
+            # Istogramma incidenti
+            fig_hist = go.Figure()
+            inc_clip = sub["n_incidenti"].clip(
+                upper=sub["n_incidenti"].quantile(0.99))
+            fig_hist.add_trace(go.Histogram(x=inc_clip, nbinsx=50,
+                                            marker_color="#a6e3a1", opacity=0.7))
+            fig_hist.update_layout(
+                **_LAYOUT_BASE,
+                xaxis=dict(title="N. incidenti per sito", gridcolor=_GRIGLIA),
+                yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA, type="log"))
+
+            # Riepilogo modelli
+            righe_mod = []
+            for cat in cats_uniche:
+                sc = sub[sub[col_cat] == cat]
+                righe_mod.append({
+                    "Categoria": cat,
+                    "N siti": len(sc),
+                    "Inc. totali": int(sc["n_incidenti"].sum()),
+                    "k": f"{sc['k_spf'].iloc[0]:.4f}" if len(sc) > 0 else "-",
+                    "E medio": f"{sc['E_i'].mean():.2f}",
+                    "O medio": f"{sc['n_incidenti'].mean():.2f}",
+                })
+            tab_mod = dash_table.DataTable(
+                data=righe_mod,
+                columns=[{"name": k, "id": k}
+                         for k in righe_mod[0]] if righe_mod else [],
+                style_header={"backgroundColor": "#313244", "color": _TESTO,
+                              "fontWeight": "600", "fontSize": "11px",
+                              "border": "none"},
+                style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
+                            "fontSize": "11px",
+                            "border": f"1px solid {_GRIGLIA}",
+                            "padding": "4px 8px"},
+            )
+            return fig_oe, fig_res, fig_hist, tab_mod
+        except Exception:
+            log.error("Errore in aggiorna_spf:\n%s", traceback.format_exc())
+            v = _figura_vuota("Errore nel calcolo")
+            return v, v, v, _msg_placeholder("Errore.")
 
     # ==================================================================
     # Callback 7: Tab EB
@@ -329,58 +379,63 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Input("eb-tipo-sito", "value"),
     )
     def aggiorna_eb(tipo):
-        sub = df[df["tipo_sito"] == tipo].copy()
-        sub = sub[sub["excess_i"].notna()]
-        if sub.empty:
-            v = _figura_vuota("Nessun dato")
+        try:
+            sub = df[df["tipo_sito"] == tipo].copy()
+            sub = sub[sub["excess_i"].notna()]
+            if sub.empty:
+                v = _figura_vuota("Nessun dato")
+                return v, v, v, [], []
+
+            ex_clip = sub["excess_i"].clip(
+                lower=sub["excess_i"].quantile(0.01),
+                upper=sub["excess_i"].quantile(0.99))
+            fig_ex = go.Figure()
+            fig_ex.add_trace(go.Histogram(x=ex_clip, nbinsx=80,
+                                          marker_color="#89b4fa", opacity=0.7))
+            fig_ex.add_vline(x=0, line_dash="dash", line_color="#f38ba8")
+            fig_ex.update_layout(
+                **_LAYOUT_BASE,
+                xaxis=dict(title="excess_i (EB - E)", gridcolor=_GRIGLIA),
+                yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA))
+
+            epdo_clip = sub["excess_EPDO_i"].clip(
+                lower=sub["excess_EPDO_i"].quantile(0.01),
+                upper=sub["excess_EPDO_i"].quantile(0.99))
+            fig_epdo = go.Figure()
+            fig_epdo.add_trace(go.Histogram(x=epdo_clip, nbinsx=80,
+                                            marker_color="#f38ba8", opacity=0.7))
+            fig_epdo.add_vline(x=0, line_dash="dash", line_color="#89b4fa")
+            fig_epdo.update_layout(
+                **_LAYOUT_BASE,
+                xaxis=dict(title="excess EPDO", gridcolor=_GRIGLIA),
+                yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA))
+
+            fig_w = go.Figure()
+            samp = sub.sample(min(5000, len(sub)), random_state=42)
+            fig_w.add_trace(go.Scatter(
+                x=samp["n_incidenti"], y=samp["w_i"], mode="markers",
+                marker=dict(size=3, color="#a6e3a1", opacity=0.4),
+                hoverinfo="x+y"))
+            fig_w.update_layout(
+                **_LAYOUT_BASE,
+                xaxis=dict(title="N. incidenti osservati",
+                           gridcolor=_GRIGLIA, type="log"),
+                yaxis=dict(title="Peso EB (w_i)", gridcolor=_GRIGLIA,
+                           range=[0, 1.05]))
+
+            col_id = "id_segmento" if tipo == "segmento" else "id_nodo"
+            col_nome = "toponimo" if tipo == "segmento" else col_id
+            cols_show = [col_nome, "n_incidenti", "E_i", "EB_i", "excess_i",
+                         "excess_EPDO_i", "costo_sociale_eccesso_eur"]
+            cols_show = [c for c in cols_show if c in sub.columns]
+            top = sub.nlargest(30, "excess_EPDO_i")[cols_show].round(2)
+            return (fig_ex, fig_epdo, fig_w,
+                    top.to_dict("records"),
+                    [{"name": c, "id": c} for c in cols_show])
+        except Exception:
+            log.error("Errore in aggiorna_eb:\n%s", traceback.format_exc())
+            v = _figura_vuota("Errore")
             return v, v, v, [], []
-
-        # Hist excess_i
-        ex_clip = sub["excess_i"].clip(
-            lower=sub["excess_i"].quantile(0.01),
-            upper=sub["excess_i"].quantile(0.99))
-        fig_ex = go.Figure()
-        fig_ex.add_trace(go.Histogram(x=ex_clip, nbinsx=80,
-                                      marker_color="#89b4fa", opacity=0.7))
-        fig_ex.add_vline(x=0, line_dash="dash", line_color="#f38ba8")
-        fig_ex.update_layout(**_LAYOUT_BASE,
-                             xaxis=dict(title="excess_i (EB - E)", gridcolor=_GRIGLIA),
-                             yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA))
-
-        # Hist excess_EPDO_i
-        epdo_clip = sub["excess_EPDO_i"].clip(
-            lower=sub["excess_EPDO_i"].quantile(0.01),
-            upper=sub["excess_EPDO_i"].quantile(0.99))
-        fig_epdo = go.Figure()
-        fig_epdo.add_trace(go.Histogram(x=epdo_clip, nbinsx=80,
-                                        marker_color="#f38ba8", opacity=0.7))
-        fig_epdo.add_vline(x=0, line_dash="dash", line_color="#89b4fa")
-        fig_epdo.update_layout(**_LAYOUT_BASE,
-                               xaxis=dict(title="excess EPDO", gridcolor=_GRIGLIA),
-                               yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA))
-
-        # Scatter w_i vs n_incidenti
-        fig_w = go.Figure()
-        fig_w.add_trace(go.Scatter(
-            x=sub["n_incidenti"], y=sub["w_i"], mode="markers",
-            marker=dict(size=3, color="#a6e3a1", opacity=0.4),
-            hoverinfo="x+y"))
-        fig_w.update_layout(**_LAYOUT_BASE,
-                            xaxis=dict(title="N. incidenti osservati",
-                                       gridcolor=_GRIGLIA, type="log"),
-                            yaxis=dict(title="Peso EB (w_i)", gridcolor=_GRIGLIA,
-                                       range=[0, 1.05]))
-
-        # Top 30
-        col_id = "id_segmento" if tipo == "segmento" else "id_nodo"
-        col_nome = "toponimo" if tipo == "segmento" else col_id
-        cols_show = [col_nome, "n_incidenti", "E_i", "EB_i", "excess_i",
-                     "excess_EPDO_i", "costo_sociale_eccesso_eur"]
-        cols_show = [c for c in cols_show if c in sub.columns]
-        top = sub.nlargest(30, "excess_EPDO_i")[cols_show].round(2)
-        data = top.to_dict("records")
-        columns = [{"name": c, "id": c} for c in cols_show]
-        return fig_ex, fig_epdo, fig_w, data, columns
 
     # ==================================================================
     # Callback 8: Tab Sensitivita'
@@ -397,76 +452,98 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Input("peso-D", "value"),
     )
     def aggiorna_sensitivita(pA, pB, pC, pD):
-        tot = (pA or 0) + (pB or 0) + (pC or 0) + (pD or 0)
-        if tot == 0:
-            tot = 1
-        wA, wB, wC, wD = pA / tot, pB / tot, pC / tot, pD / tot
+        try:
+            tot = (pA or 0) + (pB or 0) + (pC or 0) + (pD or 0)
+            if tot == 0:
+                tot = 1
+            wA, wB, wC, wD = pA / tot, pB / tot, pC / tot, pD / tot
+            pesi_txt = f"Normalizzati: A={wA:.2f}  B={wB:.2f}  C={wC:.2f}  D={wD:.2f}"
 
-        pesi_txt = f"Normalizzati: A={wA:.2f}  B={wB:.2f}  C={wC:.2f}  D={wD:.2f}"
+            icp_new = (wA * df["A_norm"] + wB * df["B_norm"]
+                       + wC * df["C_norm"] + wD * df["D_norm"])
 
-        icp_new = (wA * df["A_norm"] + wB * df["B_norm"]
-                   + wC * df["C_norm"] + wD * df["D_norm"])
+            rank_old = df["ICP"].rank(ascending=False, method="min")
+            rank_new = icp_new.rank(ascending=False, method="min")
 
-        rank_old = df["ICP"].rank(ascending=False, method="min")
-        rank_new = icp_new.rank(ascending=False, method="min")
+            if sp_stats is not None:
+                validi = rank_old.notna() & rank_new.notna()
+                if validi.sum() > 10:
+                    rho, _ = sp_stats.spearmanr(rank_old[validi], rank_new[validi])
+                else:
+                    rho = float("nan")
+            else:
+                rho = float("nan")
 
-        validi = rank_old.notna() & rank_new.notna()
-        if validi.sum() > 10:
-            rho, _ = sp_stats.spearmanr(rank_old[validi], rank_new[validi])
-        else:
-            rho = float("nan")
+            rho_txt = f"rho = {rho:.4f}" if np.isfinite(rho) else "N/D (scipy mancante)"
+            rho_color = ("#a6e3a1" if rho > 0.95
+                         else "#f9e2af" if rho > 0.85
+                         else "#f38ba8")
 
-        rho_txt = f"rho = {rho:.4f}"
-        rho_color = "#a6e3a1" if rho > 0.95 else "#f9e2af" if rho > 0.85 else "#f38ba8"
+            top_old = df.nlargest(20, "ICP")[
+                ["tipo_sito", "toponimo", "ICP"]].copy()
+            top_old["rank_default"] = range(1, 21)
+            top_old["ICP_nuovo"] = icp_new.loc[top_old.index].values
+            top_old["rank_nuovo"] = rank_new.loc[top_old.index].astype(int).values
+            top_old = top_old.round(2)
 
-        # Confronto top 20
-        top_old = df.nlargest(20, "ICP")[["tipo_sito", "toponimo", "ICP"]].copy()
-        top_old["rank_default"] = range(1, 21)
-        top_old["ICP_nuovo"] = icp_new.loc[top_old.index].values
-        top_old["rank_nuovo"] = rank_new.loc[top_old.index].astype(int).values
-        top_old = top_old.round(2)
+            tab_conf = dash_table.DataTable(
+                data=top_old.to_dict("records"),
+                columns=[{"name": c, "id": c} for c in
+                         ["rank_default", "toponimo", "ICP", "ICP_nuovo",
+                          "rank_nuovo"]],
+                page_size=20,
+                style_header={"backgroundColor": "#313244", "color": _TESTO,
+                              "fontWeight": "600", "fontSize": "11px",
+                              "border": "none"},
+                style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
+                            "fontSize": "11px",
+                            "border": f"1px solid {_GRIGLIA}",
+                            "padding": "4px 8px", "maxWidth": "200px",
+                            "overflow": "hidden", "textOverflow": "ellipsis"},
+            )
 
-        tab_conf = dash_table.DataTable(
-            data=top_old.to_dict("records"),
-            columns=[{"name": c, "id": c} for c in
-                     ["rank_default", "toponimo", "ICP", "ICP_nuovo", "rank_nuovo"]],
-            page_size=20,
-            style_header={"backgroundColor": "#313244", "color": _TESTO,
-                          "fontWeight": "600", "fontSize": "11px", "border": "none"},
-            style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
-                        "fontSize": "11px", "border": f"1px solid {_GRIGLIA}",
-                        "padding": "4px 8px", "maxWidth": "200px",
-                        "overflow": "hidden", "textOverflow": "ellipsis"},
-        )
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Histogram(
+                x=icp_new, nbinsx=60, marker_color="#cba6f7", opacity=0.7,
+                name="ICP nuovo"))
+            fig_hist.add_trace(go.Histogram(
+                x=df["ICP"], nbinsx=60, marker_color="#89b4fa", opacity=0.4,
+                name="ICP default"))
+            fig_hist.update_layout(
+                **_LAYOUT_BASE, barmode="overlay",
+                xaxis=dict(title="ICP", gridcolor=_GRIGLIA),
+                yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA),
+                legend=dict(bgcolor=_SFONDO,
+                            font=dict(size=10, color=_TESTO)))
 
-        # Hist ICP nuovo
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Histogram(
-            x=icp_new, nbinsx=60, marker_color="#cba6f7", opacity=0.7, name="ICP nuovo"))
-        fig_hist.add_trace(go.Histogram(
-            x=df["ICP"], nbinsx=60, marker_color="#89b4fa", opacity=0.4, name="ICP default"))
-        fig_hist.update_layout(**_LAYOUT_BASE, barmode="overlay",
-                               xaxis=dict(title="ICP", gridcolor=_GRIGLIA),
-                               yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA),
-                               legend=dict(bgcolor=_SFONDO, font=dict(size=10, color=_TESTO)))
+            top500 = df.nlargest(500, "ICP").index
+            fig_sc = go.Figure()
+            fig_sc.add_trace(go.Scatter(
+                x=df.loc[top500, "ICP"].values,
+                y=icp_new.loc[top500].values,
+                mode="markers",
+                marker=dict(size=4, color="#f9e2af", opacity=0.6),
+                hoverinfo="x+y"))
+            xy_max = max(df.loc[top500, "ICP"].max(),
+                         icp_new.loc[top500].max()) * 1.05
+            fig_sc.add_trace(go.Scatter(
+                x=[0, xy_max], y=[0, xy_max], mode="lines",
+                line=dict(color="#6c7086", dash="dash", width=1),
+                showlegend=False))
+            fig_sc.update_layout(
+                **_LAYOUT_BASE,
+                xaxis=dict(title="ICP default", gridcolor=_GRIGLIA),
+                yaxis=dict(title="ICP nuovi pesi", gridcolor=_GRIGLIA))
 
-        # Scatter ICP default vs nuovo (top 500)
-        top500 = df.nlargest(500, "ICP").index
-        fig_sc = go.Figure()
-        fig_sc.add_trace(go.Scatter(
-            x=df.loc[top500, "ICP"], y=icp_new.loc[top500],
-            mode="markers", marker=dict(size=4, color="#f9e2af", opacity=0.6),
-            hoverinfo="x+y"))
-        xy_max = max(df.loc[top500, "ICP"].max(), icp_new.loc[top500].max()) * 1.05
-        fig_sc.add_trace(go.Scatter(
-            x=[0, xy_max], y=[0, xy_max], mode="lines",
-            line=dict(color="#6c7086", dash="dash", width=1), showlegend=False))
-        fig_sc.update_layout(**_LAYOUT_BASE,
-                             xaxis=dict(title="ICP default", gridcolor=_GRIGLIA),
-                             yaxis=dict(title="ICP nuovi pesi", gridcolor=_GRIGLIA))
-
-        rho_div = html.Span(rho_txt, style={"color": rho_color})
-        return pesi_txt, rho_div, tab_conf, fig_hist, fig_sc
+            rho_div = html.Span(rho_txt, style={"color": rho_color})
+            return pesi_txt, rho_div, tab_conf, fig_hist, fig_sc
+        except Exception:
+            log.error("Errore in aggiorna_sensitivita:\n%s",
+                      traceback.format_exc())
+            v = _figura_vuota("Errore")
+            return ("Errore",
+                    html.Span("Errore", style={"color": "#f38ba8"}),
+                    _msg_placeholder("Errore"), v, v)
 
     # ==================================================================
     # Callback 9: Tab Decisionale — dropdown categorie
@@ -495,53 +572,65 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         if tab != "decisionale":
             raise PreventUpdate
 
-        col_cat = "spf_categoria" if "spf_categoria" in df.columns else "categoria_spf"
-        sub = df.copy()
-        if categorie:
-            sub = sub[sub[col_cat].isin(categorie)]
+        try:
+            col_cat = ("spf_categoria" if "spf_categoria" in df.columns
+                       else "categoria_spf")
+            sub = df.copy()
+            if categorie:
+                sub = sub[sub[col_cat].isin(categorie)]
 
-        # Scatter matrice
-        fig_sc = go.Figure()
-        for fascia in ORDINE_FASCE:
-            pf = sub[sub["fascia_priorita"] == fascia]
-            if pf.empty:
-                continue
-            fig_sc.add_trace(go.Scatter(
-                x=pf["excess_EPDO_i"].clip(lower=-50), y=pf["B_norm"],
-                mode="markers",
-                marker=dict(size=4, color=COLORI_FASCE[fascia], opacity=0.6),
-                name=fascia.capitalize(),
-                text=pf.apply(lambda r: f"ICP: {r['ICP']:.1f}", axis=1),
-                hoverinfo="text"))
-        fig_sc.update_layout(**_LAYOUT_BASE,
-                             xaxis=dict(title="Eccesso EPDO", gridcolor=_GRIGLIA,
-                                        zeroline=True, zerolinecolor="#6c7086"),
-                             yaxis=dict(title="Severita' (norm.)", gridcolor=_GRIGLIA,
-                                        zeroline=True, zerolinecolor="#6c7086"),
-                             legend=dict(bgcolor=_SFONDO, font=dict(size=10, color=_TESTO)))
+            fig_sc = go.Figure()
+            for fascia in ORDINE_FASCE:
+                pf = sub[sub["fascia_priorita"] == fascia]
+                if pf.empty:
+                    continue
+                samp = pf.sample(min(2000, len(pf)), random_state=42)
+                fig_sc.add_trace(go.Scatter(
+                    x=samp["excess_EPDO_i"].clip(lower=-50),
+                    y=samp["B_norm"], mode="markers",
+                    marker=dict(size=4, color=COLORI_FASCE[fascia], opacity=0.6),
+                    name=fascia.capitalize(),
+                    text=[f"ICP: {v:.1f}" for v in samp["ICP"]],
+                    hoverinfo="text"))
+            fig_sc.update_layout(
+                **_LAYOUT_BASE,
+                xaxis=dict(title="Eccesso EPDO", gridcolor=_GRIGLIA,
+                           zeroline=True, zerolinecolor="#6c7086"),
+                yaxis=dict(title="Severita' (norm.)", gridcolor=_GRIGLIA,
+                           zeroline=True, zerolinecolor="#6c7086"),
+                legend=dict(bgcolor=_SFONDO,
+                            font=dict(size=10, color=_TESTO)))
 
-        # Bar fasce
-        cs = sub[sub["tipo_sito"] == "segmento"]["fascia_priorita"].value_counts().reindex(
-            ORDINE_FASCE, fill_value=0)
-        ci = sub[sub["tipo_sito"] == "intersezione"]["fascia_priorita"].value_counts().reindex(
-            ORDINE_FASCE, fill_value=0)
-        fig_bar = go.Figure([
-            go.Bar(name="Segmenti", x=ORDINE_FASCE, y=cs.values,
-                   marker_color=[COLORI_FASCE[f] for f in ORDINE_FASCE], opacity=0.85),
-            go.Bar(name="Intersezioni", x=ORDINE_FASCE, y=ci.values,
-                   marker_color=[COLORI_FASCE[f] for f in ORDINE_FASCE], opacity=0.5),
-        ])
-        fig_bar.update_layout(**_LAYOUT_BASE, barmode="group",
-                              xaxis=dict(tickfont=dict(size=10)),
-                              yaxis=dict(gridcolor=_GRIGLIA, tickfont=dict(size=10)),
-                              legend=dict(bgcolor=_SFONDO, font=dict(size=10, color=_TESTO)))
+            cs = (sub[sub["tipo_sito"] == "segmento"]["fascia_priorita"]
+                  .value_counts().reindex(ORDINE_FASCE, fill_value=0))
+            ci = (sub[sub["tipo_sito"] == "intersezione"]["fascia_priorita"]
+                  .value_counts().reindex(ORDINE_FASCE, fill_value=0))
+            fig_bar = go.Figure([
+                go.Bar(name="Segmenti", x=ORDINE_FASCE, y=cs.values,
+                       marker_color=[COLORI_FASCE[f] for f in ORDINE_FASCE],
+                       opacity=0.85),
+                go.Bar(name="Intersezioni", x=ORDINE_FASCE, y=ci.values,
+                       marker_color=[COLORI_FASCE[f] for f in ORDINE_FASCE],
+                       opacity=0.5),
+            ])
+            fig_bar.update_layout(
+                **_LAYOUT_BASE, barmode="group",
+                xaxis=dict(tickfont=dict(size=10)),
+                yaxis=dict(gridcolor=_GRIGLIA, tickfont=dict(size=10)),
+                legend=dict(bgcolor=_SFONDO,
+                            font=dict(size=10, color=_TESTO)))
 
-        # Top 50
-        cols_tab = ["tipo_sito", "toponimo", col_cat, "fascia_priorita",
-                    "quadrante_rischio", "ICP", "A_norm", "B_norm", "C_norm",
-                    "D_norm", "n_incidenti", "excess_EPDO_i",
-                    "costo_sociale_eccesso_eur"]
-        cols_tab = [c for c in cols_tab if c in sub.columns]
-        top50 = sub.nlargest(50, "ICP")[cols_tab].round(2).to_dict("records")
-        columns = [{"name": c, "id": c} for c in cols_tab]
-        return fig_sc, fig_bar, top50, columns
+            cols_tab = ["tipo_sito", "toponimo", col_cat, "fascia_priorita",
+                        "quadrante_rischio", "ICP", "A_norm", "B_norm",
+                        "C_norm", "D_norm", "n_incidenti", "excess_EPDO_i",
+                        "costo_sociale_eccesso_eur"]
+            cols_tab = [c for c in cols_tab if c in sub.columns]
+            top50 = sub.nlargest(50, "ICP")[cols_tab].round(2)
+            return (fig_sc, fig_bar,
+                    top50.to_dict("records"),
+                    [{"name": c, "id": c} for c in cols_tab])
+        except Exception:
+            log.error("Errore in aggiorna_decisionale:\n%s",
+                      traceback.format_exc())
+            v = _figura_vuota("Errore")
+            return v, v, [], []

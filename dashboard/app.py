@@ -104,7 +104,12 @@ def main() -> None:
     args = parser.parse_args()
 
     app = crea_app(args.gpkg)
-    app.run(debug=not args.no_debug, port=args.port, host="0.0.0.0")
+    app.run(
+        debug=not args.no_debug,
+        port=args.port,
+        host="0.0.0.0",
+        use_reloader=False,
+    )
 
 
 if __name__ == "__main__":
