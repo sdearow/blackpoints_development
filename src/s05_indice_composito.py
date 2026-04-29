@@ -57,15 +57,11 @@ def calcola_componente_C(df: pd.DataFrame) -> pd.Series:
 
 
 def calcola_componente_D_segmenti(df: pd.DataFrame) -> pd.Series:
-    """Componente D — rischio velocita' per segmenti.
+    """Componente D — dispersione velocita' per segmenti.
 
-    D_i = 0.5 * max(V85/limite - 1, 0) + 0.5 * IQR_norm
+    D_i = IQR_norm (dispersione pura, indipendente dai limiti di velocita').
     """
-    v85 = df["v85_medio"].fillna(0).astype(float)
-    limite = df["limite_velocita_medio"].fillna(50).astype(float).clip(lower=1)
-    iqr = df["iqr_norm_medio"].fillna(0).astype(float)
-    eccesso = np.maximum(v85 / limite - 1.0, 0.0)
-    return 0.5 * eccesso + 0.5 * iqr
+    return df["iqr_norm_medio"].fillna(0).astype(float)
 
 
 def calcola_componente_D_intersezioni(
@@ -73,15 +69,13 @@ def calcola_componente_D_intersezioni(
     gdf_rete: pd.DataFrame,
     gdf_intersezioni: pd.DataFrame,
 ) -> pd.Series:
-    """Componente D — rischio velocita' per intersezioni.
+    """Componente D — dispersione velocita' per intersezioni.
 
-    Media pesata per TGM del D degli archi convergenti.
+    Media pesata per TGM dell'IQR_norm degli archi convergenti.
     """
-    # Calcola D per ciascun arco della rete.
-    v85 = gdf_rete["v_85"].fillna(0).astype(float)
-    limite = gdf_rete["limite_velocita"].fillna(50).astype(float).clip(lower=1)
+    # D per ciascun arco = IQR_norm (dispersione pura).
     iqr = gdf_rete.get("iqr_norm", pd.Series(0.0, index=gdf_rete.index)).fillna(0).astype(float)
-    d_arco = 0.5 * np.maximum(v85 / limite - 1.0, 0.0) + 0.5 * iqr
+    d_arco = iqr
     tgm_arco = gdf_rete["tgm"].fillna(0).astype(float)
     arco_d = dict(zip(gdf_rete["id_arco"].values, d_arco.values))
     arco_tgm = dict(zip(gdf_rete["id_arco"].values, tgm_arco.values))

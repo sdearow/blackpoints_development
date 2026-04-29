@@ -1,9 +1,11 @@
 """Layout Dash della dashboard Black Point Roma.
 
-Tre sezioni principali:
-- Mappa: segmenti e intersezioni colorati per fascia di priorita'
-- Dettaglio sito: radar chart componenti + dati incidentali
-- Vista decisionale: matrice di rischio + classifica top-N
+Cinque tab principali:
+1. Mappa: segmenti e intersezioni colorati per fascia di priorita'
+2. Analisi SPF: scatter O vs E, diagnostica modelli
+3. Analisi EB: distribuzioni eccesso, top siti
+4. Sensitivita' pesi: slider pesi ICP, confronto ranking
+5. Vista decisionale: matrice di rischio, classifica top-N
 """
 
 from __future__ import annotations
@@ -169,7 +171,6 @@ def _pannello_dettaglio() -> html.Div:
 
 
 def tab_mappa() -> html.Div:
-    """Tab mappa con filtri, mappa principale e pannello dettaglio."""
     return html.Div(
         [
             _pannello_filtri(),
@@ -181,8 +182,271 @@ def tab_mappa() -> html.Div:
     )
 
 
+# =====================================================================
+# Tab 2 — Analisi SPF
+# =====================================================================
+
+def tab_spf() -> html.Div:
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.P("Filtro tipo sito", style=STILE_TITOLO_CARD),
+                            dcc.RadioItems(
+                                id="spf-tipo-sito",
+                                options=[
+                                    {"label": " Segmenti", "value": "segmento"},
+                                    {"label": " Intersezioni", "value": "intersezione"},
+                                ],
+                                value="segmento",
+                                labelStyle={"display": "inline-block", "color": "#cdd6f4",
+                                            "fontSize": "13px", "marginRight": "16px"},
+                                inputStyle={"marginRight": "6px"},
+                            ),
+                        ],
+                        style={**STILE_CARD, "display": "inline-block"},
+                    ),
+                    html.Div(
+                        [
+                            html.P("Filtro categoria SPF", style=STILE_TITOLO_CARD),
+                            dcc.Dropdown(
+                                id="spf-categoria",
+                                placeholder="Tutte le categorie",
+                                multi=True,
+                                style={"backgroundColor": "#313244", "color": "#cdd6f4"},
+                            ),
+                        ],
+                        style={**STILE_CARD, "display": "inline-block", "minWidth": "300px",
+                               "marginLeft": "12px"},
+                    ),
+                ],
+                style={"display": "flex", "alignItems": "flex-start", "flexWrap": "wrap"},
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.P("Osservati vs Predetti SPF (binned)", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="spf-scatter-oe", style={"height": "420px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                    html.Div(
+                        [
+                            html.P("Distribuzione residui di Pearson", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="spf-residui", style={"height": "420px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "12px"},
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.P("Distribuzione incidenti per sito", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="spf-hist-incidenti", style={"height": "350px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                    html.Div(
+                        [
+                            html.P("Riepilogo modelli SPF", style=STILE_TITOLO_CARD),
+                            html.Div(id="spf-riepilogo-modelli"),
+                        ],
+                        style={**STILE_CARD, "flex": "1", "overflowX": "auto"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "12px"},
+            ),
+        ],
+        style={"padding": "12px", "backgroundColor": "#181825"},
+    )
+
+
+# =====================================================================
+# Tab 3 — Analisi EB
+# =====================================================================
+
+def tab_eb() -> html.Div:
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Filtro tipo sito", style=STILE_TITOLO_CARD),
+                    dcc.RadioItems(
+                        id="eb-tipo-sito",
+                        options=[
+                            {"label": " Segmenti", "value": "segmento"},
+                            {"label": " Intersezioni", "value": "intersezione"},
+                        ],
+                        value="segmento",
+                        labelStyle={"display": "inline-block", "color": "#cdd6f4",
+                                    "fontSize": "13px", "marginRight": "16px"},
+                        inputStyle={"marginRight": "6px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.P("Distribuzione excess_i (EB - SPF)", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="eb-hist-excess", style={"height": "380px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                    html.Div(
+                        [
+                            html.P("Distribuzione excess EPDO", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="eb-hist-epdo", style={"height": "380px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "12px"},
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.P("Peso EB (w_i) vs n_incidenti", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="eb-scatter-peso", style={"height": "380px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                    html.Div(
+                        [
+                            html.P("Top 30 siti per eccesso EPDO", style=STILE_TITOLO_CARD),
+                            dash_table.DataTable(
+                                id="eb-tabella-top",
+                                page_size=15,
+                                sort_action="native",
+                                style_header={
+                                    "backgroundColor": "#313244",
+                                    "color": "#cdd6f4",
+                                    "fontWeight": "600",
+                                    "fontSize": "11px",
+                                    "border": "none",
+                                },
+                                style_cell={
+                                    "backgroundColor": "#1e1e2e",
+                                    "color": "#cdd6f4",
+                                    "fontSize": "11px",
+                                    "border": "1px solid #313244",
+                                    "padding": "4px 8px",
+                                },
+                            ),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "12px"},
+            ),
+        ],
+        style={"padding": "12px", "backgroundColor": "#181825"},
+    )
+
+
+# =====================================================================
+# Tab 4 — Sensitivita' pesi
+# =====================================================================
+
+def _slider_peso(id_slider: str, label: str, valore: float) -> html.Div:
+    return html.Div(
+        [
+            html.Label(label, style={"color": "#cdd6f4", "fontSize": "13px",
+                                     "fontWeight": "600", "marginBottom": "4px"}),
+            dcc.Slider(
+                id=id_slider,
+                min=0, max=100, step=5,
+                value=int(valore * 100),
+                marks={0: "0", 25: "25", 50: "50", 75: "75", 100: "100"},
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+        ],
+        style={"marginBottom": "16px"},
+    )
+
+
+def tab_sensitivita() -> html.Div:
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.P("Pesi ICP (normalizzati automaticamente a somma = 1)",
+                                   style=STILE_TITOLO_CARD),
+                            _slider_peso("peso-A", "A — Eccesso EB-EPDO", 0.40),
+                            _slider_peso("peso-B", "B — Severita'", 0.25),
+                            _slider_peso("peso-C", "C — Vulnerabilita' pedoni", 0.20),
+                            _slider_peso("peso-D", "D — Dispersione velocita'", 0.15),
+                            html.Div(id="pesi-normalizzati",
+                                     style={"color": "#a6adc8", "fontSize": "12px",
+                                            "marginTop": "8px"}),
+                        ],
+                        style={**STILE_CARD, "width": "350px", "flexShrink": "0"},
+                    ),
+                    html.Div(
+                        [
+                            html.P("Stabilita' ranking (Spearman rho vs pesi default)",
+                                   style=STILE_TITOLO_CARD),
+                            html.Div(id="sens-rho", style={"color": "#cdd6f4",
+                                                           "fontSize": "28px",
+                                                           "fontWeight": "700",
+                                                           "textAlign": "center",
+                                                           "padding": "30px 0"}),
+                            html.P("Confronto top 20 (default vs nuovi pesi)",
+                                   style=STILE_TITOLO_CARD),
+                            html.Div(id="sens-confronto-top"),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "12px"},
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.P("Distribuzione ICP con nuovi pesi", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="sens-hist-icp", style={"height": "380px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                    html.Div(
+                        [
+                            html.P("ICP default vs ICP nuovi pesi (top 500)", style=STILE_TITOLO_CARD),
+                            dcc.Graph(id="sens-scatter-icp", style={"height": "380px"},
+                                      config={"displayModeBar": True}),
+                        ],
+                        style={**STILE_CARD, "flex": "1"},
+                    ),
+                ],
+                style={"display": "flex", "gap": "12px"},
+            ),
+        ],
+        style={"padding": "12px", "backgroundColor": "#181825"},
+    )
+
+
+# =====================================================================
+# Tab 5 — Vista decisionale
+# =====================================================================
+
 def tab_decisionale() -> html.Div:
-    """Tab vista decisionale con matrice di rischio e classifica."""
     return html.Div(
         [
             html.Div(
@@ -205,6 +469,18 @@ def tab_decisionale() -> html.Div:
                     ),
                 ],
                 style={"display": "flex", "gap": "12px"},
+            ),
+            html.Div(
+                [
+                    html.P("Filtro categoria per classifica", style=STILE_TITOLO_CARD),
+                    dcc.Dropdown(
+                        id="dec-filtro-categoria",
+                        placeholder="Tutte le categorie (classifica globale)",
+                        multi=True,
+                        style={"backgroundColor": "#313244", "color": "#cdd6f4"},
+                    ),
+                ],
+                style={**STILE_CARD, "maxWidth": "500px"},
             ),
             html.Div(
                 [
@@ -243,8 +519,15 @@ def tab_decisionale() -> html.Div:
     )
 
 
+# =====================================================================
+# Layout principale
+# =====================================================================
+
 def costruisci_layout() -> html.Div:
-    """Costruisce il layout principale dell'applicazione."""
+    tab_style = {"color": "#6c7086", "backgroundColor": "#181825",
+                 "border": "none", "padding": "6px 16px"}
+    tab_selected = {"color": "#cdd6f4", "backgroundColor": "#313244",
+                    "border": "none", "padding": "6px 16px"}
     return html.Div(
         [
             html.Div(
@@ -264,17 +547,15 @@ def costruisci_layout() -> html.Div:
                             value="mappa",
                             children=[
                                 dcc.Tab(label="Mappa", value="mappa",
-                                        style={"color": "#6c7086", "backgroundColor": "#181825",
-                                               "border": "none", "padding": "6px 16px"},
-                                        selected_style={"color": "#cdd6f4",
-                                                        "backgroundColor": "#313244",
-                                                        "border": "none", "padding": "6px 16px"}),
+                                        style=tab_style, selected_style=tab_selected),
+                                dcc.Tab(label="Analisi SPF", value="spf",
+                                        style=tab_style, selected_style=tab_selected),
+                                dcc.Tab(label="Analisi EB", value="eb",
+                                        style=tab_style, selected_style=tab_selected),
+                                dcc.Tab(label="Sensitivita' pesi", value="sensitivita",
+                                        style=tab_style, selected_style=tab_selected),
                                 dcc.Tab(label="Vista decisionale", value="decisionale",
-                                        style={"color": "#6c7086", "backgroundColor": "#181825",
-                                               "border": "none", "padding": "6px 16px"},
-                                        selected_style={"color": "#cdd6f4",
-                                                        "backgroundColor": "#313244",
-                                                        "border": "none", "padding": "6px 16px"}),
+                                        style=tab_style, selected_style=tab_selected),
                             ],
                         ),
                         style={"marginLeft": "auto"},
