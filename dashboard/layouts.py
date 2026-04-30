@@ -572,6 +572,8 @@ def costruisci_layout() -> html.Div:
             ),
             html.Div(id="contenuto-tab"),
             dcc.Store(id="sito-selezionato"),
+            dcc.Store(id="pesi-correnti",
+                      data={"A": 40, "B": 25, "C": 20, "D": 15}),
         ],
         style={"fontFamily": "'Inter', 'Segoe UI', sans-serif",
                "backgroundColor": "#181825", "minHeight": "100vh"},
