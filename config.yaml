@@ -145,14 +145,21 @@ eb:
   intervallo_confidenza: 0.95
 
 epdo:
-  # Pesi EPDO basati sui costi sociali MEF/ISTAT (vedi Task 3.2 del piano).
+  # Pesi EPDO per la prioritizzazione (Hauer 1997, AASHTO).
+  # Scelti per il ranking EB: rapporti moderati che evitano che un singolo
+  # mortale casuale domini la classifica.
+  # NB: i dati incidenti non distinguono feriti gravi/lievi, quindi si usa
+  # un'unica categoria "feriti".
   pesi:
-    mortale: 167
-    ferito_grave: 24
-    ferito_lieve: 2
+    mortale: 12
+    feriti: 3
     solo_danni: 1
-  # Costo sociale medio per incidente equivalente "solo danni" (euro).
-  costo_unitario_eur: 9000
+  # Costi sociali unitari MEF/ISTAT (euro, valori 2022) per il calcolo
+  # del costo sociale separato (non usati per la prioritizzazione EPDO).
+  costi_sociali_eur:
+    mortale: 1500000
+    feriti: 48300     # blend 15% gravi (220K) + 85% lievi (18K)
+    solo_danni: 9000
 
 # ---------------------------------------------------------------------------
 # Fase 4 - Indice composito di priorita'

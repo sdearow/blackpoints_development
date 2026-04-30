@@ -37,12 +37,12 @@ def calcola_componente_A(df: pd.DataFrame) -> pd.Series:
 def calcola_componente_B(df: pd.DataFrame) -> pd.Series:
     """Componente B — indice di severita'.
 
-    B_i = (n_mortali + n_feriti_gravi) / n_incidenti
-    Se n_incidenti == 0 -> 0.
+    B_i = n_mortali / n_incidenti
+    Solo mortalita': i dati non distinguono feriti gravi/lievi.
     """
     n = df["n_incidenti"].astype(float).clip(lower=1e-9)
-    gravi = df["n_mortali"].fillna(0).astype(float) + df["n_feriti_gravi"].fillna(0).astype(float)
-    return (gravi / n).where(df["n_incidenti"] > 0, 0.0)
+    mortali = df["n_mortali"].fillna(0).astype(float)
+    return (mortali / n).where(df["n_incidenti"] > 0, 0.0)
 
 
 def calcola_componente_C(df: pd.DataFrame) -> pd.Series:

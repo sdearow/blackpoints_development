@@ -52,9 +52,10 @@ def _colonne_export(gdf: gpd.GeoDataFrame) -> list[str]:
     """Seleziona le colonne rilevanti per l'export GeoJSON."""
     utili = [
         "id_segmento", "id_nodo", "toponimo", "tipo_sito",
-        "n_incidenti", "n_mortali", "n_feriti_gravi", "n_feriti_lievi",
+        "n_incidenti", "n_mortali", "n_feriti",
         "n_solo_danni", "n_pedoni",
-        "EB_i", "excess_i", "excess_EPDO_i", "costo_sociale_eccesso_eur",
+        "EB_i", "excess_i", "excess_EPDO_i",
+        "costo_sociale_eur", "costo_sociale_eccesso_eur",
         "A_norm", "B_norm", "C_norm", "D_norm",
         "ICP", "fascia_priorita", "quadrante_rischio",
         "v85_medio", "limite_velocita_medio", "tgm_medio", "lunghezza_m",
@@ -91,9 +92,10 @@ def _colonne_excel(df: pd.DataFrame) -> list[str]:
         "ranking", "id_segmento", "id_nodo", "toponimo", "tipo_sito",
         "fascia_priorita", "quadrante_rischio", "ICP",
         "A_norm", "B_norm", "C_norm", "D_norm",
-        "n_incidenti", "n_mortali", "n_feriti_gravi", "n_feriti_lievi",
+        "n_incidenti", "n_mortali", "n_feriti",
         "n_solo_danni", "n_pedoni",
-        "EB_i", "excess_i", "excess_EPDO_i", "costo_sociale_eccesso_eur",
+        "EB_i", "excess_i", "excess_EPDO_i",
+        "costo_sociale_eur", "costo_sociale_eccesso_eur",
         "v85_medio", "limite_velocita_medio", "tgm_medio", "lunghezza_m",
         "flusso_entrante", "is_semaforizzata", "n_archi",
     ]
