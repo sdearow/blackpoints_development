@@ -63,8 +63,7 @@ def prepara_dataset_segmenti(
         .agg(
             n_incidenti=("id_incidente", "count"),
             n_mortali=("n_morti", lambda s: int((s > 0).sum())),
-            n_feriti_gravi=("n_riservata", lambda s: int((s > 0).sum())),
-            n_feriti_lievi=(
+            n_feriti=(
                 "gravita",
                 lambda s: int((s == "ferito_lieve").sum()),
             ),
@@ -106,8 +105,7 @@ def prepara_dataset_segmenti(
     df["n_incidenti"] = df["n_incidenti"].fillna(0).astype(int)
     for col in (
         "n_mortali",
-        "n_feriti_gravi",
-        "n_feriti_lievi",
+        "n_feriti",
         "n_solo_danni",
         "n_pedoni",
     ):
@@ -150,8 +148,7 @@ def prepara_dataset_intersezioni(
         .agg(
             n_incidenti=("id_incidente", "count"),
             n_mortali=("n_morti", lambda s: int((s > 0).sum())),
-            n_feriti_gravi=("n_riservata", lambda s: int((s > 0).sum())),
-            n_feriti_lievi=(
+            n_feriti=(
                 "gravita",
                 lambda s: int((s == "ferito_lieve").sum()),
             ),
@@ -192,8 +189,7 @@ def prepara_dataset_intersezioni(
     df["n_incidenti"] = df["n_incidenti"].fillna(0).astype(int)
     for col in (
         "n_mortali",
-        "n_feriti_gravi",
-        "n_feriti_lievi",
+        "n_feriti",
         "n_solo_danni",
         "n_pedoni",
     ):

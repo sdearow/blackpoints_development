@@ -227,12 +227,11 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             )
 
             grav = {"Mortali": int(sito.get("n_mortali", 0)),
-                    "Feriti gravi": int(sito.get("n_feriti_gravi", 0)),
-                    "Feriti lievi": int(sito.get("n_feriti_lievi", 0)),
+                    "Feriti": int(sito.get("n_feriti", 0)),
                     "Solo danni": int(sito.get("n_solo_danni", 0))}
             fig_b = go.Figure(go.Bar(
                 x=list(grav.values()), y=list(grav.keys()), orientation="h",
-                marker_color=["#8b0000", "#e74c3c", "#e67e22", "#f1c40f"]))
+                marker_color=["#8b0000", "#e67e22", "#f1c40f"]))
             fig_b.update_layout(**_LAYOUT_BASE,
                                 xaxis=dict(gridcolor=_GRIGLIA, tickfont=dict(size=10)),
                                 yaxis=dict(tickfont=dict(size=10)),

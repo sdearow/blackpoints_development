@@ -81,22 +81,18 @@ def calcola_epdo(
     """Calcola l'EPDO per ciascun sito.
 
     EPDO_i = n_mortali * peso_mortale
-           + n_feriti_gravi * peso_ferito_grave
-           + n_feriti_lievi * peso_ferito_lieve
+           + n_feriti * peso_feriti
            + n_solo_danni * peso_solo_danni
 
-    Se le colonne dei conteggi per gravita' non sono presenti nel
-    DataFrame, ricade su ``n_incidenti`` con peso medio = 1.
+    Pesi di riferimento: Hauer (1997), AASHTO — 12 / 3 / 1.
     """
     cols = {
         "mortale": "n_mortali",
-        "ferito_grave": "n_feriti_gravi",
-        "ferito_lieve": "n_feriti_lievi",
+        "feriti": "n_feriti",
         "solo_danni": "n_solo_danni",
     }
     colonne_presenti = [col for col in cols.values() if col in df.columns]
     if not colonne_presenti and "n_incidenti" in df.columns:
-        # Fallback: nessuna colonna di gravita' disponibile, usa n_incidenti con peso 1.
         return df["n_incidenti"].fillna(0).astype(float).copy()
     epdo = pd.Series(0.0, index=df.index)
     for gravita, col in cols.items():
@@ -106,17 +102,39 @@ def calcola_epdo(
     return epdo
 
 
+def calcola_costo_sociale(
+    df: pd.DataFrame,
+    costi_sociali: dict[str, float],
+) -> pd.Series:
+    """Calcola il costo sociale per ciascun sito (euro).
+
+    Costi unitari MEF/ISTAT (valori 2022):
+    mortale 1.5M, feriti 48.3K (blend), solo_danni 9K.
+    """
+    cols = {
+        "mortale": "n_mortali",
+        "feriti": "n_feriti",
+        "solo_danni": "n_solo_danni",
+    }
+    costo = pd.Series(0.0, index=df.index)
+    for gravita, col in cols.items():
+        if col in df.columns:
+            c = float(costi_sociali.get(gravita, 0.0))
+            costo += df[col].fillna(0).astype(float) * c
+    return costo
+
+
 def arricchisci_con_eb_epdo(
     df: pd.DataFrame,
     pesi_epdo: dict[str, float],
-    costo_unitario_eur: float,
+    costi_sociali: dict[str, float],
 ) -> pd.DataFrame:
-    """Aggiunge le colonne EB ed EPDO al DataFrame del sito.
+    """Aggiunge le colonne EB, EPDO e costo sociale al DataFrame del sito.
 
     Richiede colonne ``n_incidenti``, ``E_i``, ``k_spf`` nel DataFrame.
     Aggiunge: ``w_i``, ``EB_i``, ``excess_i``, ``var_EB_i``,
     ``EPDO_i``, ``peso_medio_epdo``, ``excess_EPDO_i``,
-    ``costo_sociale_eccesso_eur``.
+    ``costo_sociale_eur``, ``costo_sociale_eccesso_eur``.
     """
     df = df.copy()
 
@@ -129,11 +147,13 @@ def arricchisci_con_eb_epdo(
         df[col] = vals
 
     df["EPDO_i"] = calcola_epdo(df, pesi_epdo)
-    # Peso medio EPDO per incidente (usato per scalare l'eccesso).
     n_inc = df["n_incidenti"].astype(float).clip(lower=1e-9)
     df["peso_medio_epdo"] = df["EPDO_i"] / n_inc
     df["excess_EPDO_i"] = df["excess_i"] * df["peso_medio_epdo"]
-    df["costo_sociale_eccesso_eur"] = df["excess_EPDO_i"] * float(costo_unitario_eur)
+
+    df["costo_sociale_eur"] = calcola_costo_sociale(df, costi_sociali)
+    costo_medio = df["costo_sociale_eur"] / n_inc
+    df["costo_sociale_eccesso_eur"] = df["excess_i"] * costo_medio
 
     return df
 
@@ -229,13 +249,15 @@ def main(config: dict[str, Any]) -> None:
     pesi_epdo: dict[str, float] = {
         k: float(v) for k, v in config["epdo"]["pesi"].items()
     }
-    costo_unitario = float(config["epdo"]["costo_unitario_eur"])
+    costi_sociali: dict[str, float] = {
+        k: float(v) for k, v in config["epdo"]["costi_sociali_eur"].items()
+    }
 
     # Task 3.1 + 3.2.
     log.info("Calcolo EB e EPDO per segmenti...")
-    df_seg = arricchisci_con_eb_epdo(df_seg, pesi_epdo, costo_unitario)
+    df_seg = arricchisci_con_eb_epdo(df_seg, pesi_epdo, costi_sociali)
     log.info("Calcolo EB e EPDO per intersezioni...")
-    df_int = arricchisci_con_eb_epdo(df_int, pesi_epdo, costo_unitario)
+    df_int = arricchisci_con_eb_epdo(df_int, pesi_epdo, costi_sociali)
 
     # Riassunto.
     ris = riassumi_eb(df_seg, df_int)
