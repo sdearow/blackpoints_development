@@ -96,9 +96,15 @@ matching:
   soglia_snap_geometrica: 30
   # Distanza massima entro cui si tenta il match toponomastico (metri).
   soglia_snap_toponomastica: 100
-  # Se true, filtra i nodi a grado 3 con un solo toponimo distinto:
-  # tipicamente confluenze di carreggiate separate, non veri incroci.
+  # Se true, filtra le false intersezioni con tre criteri:
+  # 1) nodi a grado 3-4 con <=1 toponimo distinto (carreggiate separate)
+  # 2) nodi a grado 3-4 con FRC uniforme e <=2 toponimi (biforcazioni)
+  # 3) cluster di prossimita': nodi vicini con toponimi sovrapposti vengono
+  #    fusi nel nodo a grado piu' alto.
   filtra_falsi_incroci: true
+  # Raggio (metri) per il clustering di prossimita' delle intersezioni.
+  # Nodi entro questa distanza con almeno un toponimo in comune vengono fusi.
+  raggio_cluster_intersezioni: 30
   # Variazione massima del TGM tra archetti consecutivi per appartenere
   # allo stesso segmento omogeneo.
   soglia_variazione_tgm_segmento: 0.30
@@ -160,6 +166,9 @@ indice_composito:
   # Percentili usati per la normalizzazione robusta delle componenti.
   percentile_min: 1
   percentile_max: 99
+  # Se la % di zeri in una componente supera questa soglia, usa la
+  # normalizzazione zero-inflated: zero -> 0, positivi -> [1, 100].
+  soglia_zero_pct: 50.0
 
 classificazione:
   # Soglie percentili per le 5 fasce di priorita' (Task 4.2).

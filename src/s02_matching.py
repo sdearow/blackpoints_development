@@ -202,6 +202,7 @@ def estrai_intersezioni(
     gdf_rete: gpd.GeoDataFrame,
     tolleranza_m: float = 0.5,
     filtra_falsi_incroci: bool = True,
+    raggio_cluster_intersezioni_m: float = 30.0,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
     """Estrae i nodi-intersezione della rete TomTom.
 
@@ -288,20 +289,164 @@ def estrai_intersezioni(
     )
 
     if filtra_falsi_incroci:
-        n_prima = len(gdf_intersezioni)
-        n_topo = gdf_intersezioni["toponimi"].apply(len)
-        mask_falso = (gdf_intersezioni["n_archi"] == 3) & (n_topo == 1)
-        gdf_intersezioni = gdf_intersezioni.loc[~mask_falso].copy()
-        n_filtrate = int(mask_falso.sum())
-        log.info(
-            "Filtrate %d false intersezioni su %d candidati "
-            "(3 archi, 1 solo toponimo distinto). Restano %d.",
-            n_filtrate,
-            n_prima,
-            len(gdf_intersezioni),
+        gdf_intersezioni = _filtra_falsi_incroci(
+            gdf_intersezioni, gdf_rete,
+            raggio_cluster_m=raggio_cluster_intersezioni_m,
         )
 
     return gdf_intersezioni, df_archi_nodi
+
+
+def _filtra_falsi_incroci(
+    gdf_intersezioni: gpd.GeoDataFrame,
+    gdf_rete: gpd.GeoDataFrame,
+    raggio_cluster_m: float = 30.0,
+) -> gpd.GeoDataFrame:
+    """Filtra le false intersezioni con tre criteri progressivi.
+
+    1. **Mono-toponimo**: nodi a grado 3 o 4 con un solo toponimo distinto
+       (confluenze di carreggiate separate, non veri incroci).
+    2. **FRC uniforme**: nodi a grado 3 o 4 dove tutti gli archi hanno la
+       stessa ``classe_frc`` e un solo toponimo (strada che si biforca e
+       rientra senza cambiare classe).
+    3. **Cluster di prossimita'**: nodi entro ``raggio_cluster_m`` che
+       condividono lo stesso set di toponimi vengono fusi in un unico nodo
+       (il baricentro del cluster), eliminando le false intersezioni
+       intermedie generate da micro-segmentazioni della rete.
+    """
+    n_prima = len(gdf_intersezioni)
+
+    # --- Filtro 1: mono-toponimo per grado 3 e 4 ---
+    n_topo = gdf_intersezioni["toponimi"].apply(len)
+    mask_falso_mono = (
+        gdf_intersezioni["n_archi"].isin([3, 4]) & (n_topo <= 1)
+    )
+    n_mono = int(mask_falso_mono.sum())
+    gdf_intersezioni = gdf_intersezioni.loc[~mask_falso_mono].copy()
+    log.info(
+        "Filtro mono-toponimo: %d false intersezioni rimosse su %d candidati "
+        "(grado 3-4, <=1 toponimo distinto). Restano %d.",
+        n_mono, n_prima, len(gdf_intersezioni),
+    )
+
+    # --- Filtro 2: FRC uniforme (grado 3-4, 1 solo FRC, <=2 toponimi) ---
+    if "classe_frc" in gdf_rete.columns and "id_arco" in gdf_rete.columns:
+        frc_per_arco = dict(
+            zip(gdf_rete["id_arco"].values, gdf_rete["classe_frc"].values)
+        )
+
+        def _frc_uniformi(archi: list[int]) -> bool:
+            frcs = {
+                frc_per_arco.get(a)
+                for a in archi
+                if frc_per_arco.get(a) is not None
+                and not (isinstance(frc_per_arco.get(a), float) and pd.isna(frc_per_arco.get(a)))
+            }
+            return len(frcs) == 1
+
+        n_pre_frc = len(gdf_intersezioni)
+        mask_frc = (
+            gdf_intersezioni["n_archi"].isin([3, 4])
+            & (gdf_intersezioni["toponimi"].apply(len) <= 2)
+            & gdf_intersezioni["archi"].apply(_frc_uniformi)
+        )
+        n_frc = int(mask_frc.sum())
+        gdf_intersezioni = gdf_intersezioni.loc[~mask_frc].copy()
+        log.info(
+            "Filtro FRC uniforme: %d false intersezioni rimosse su %d "
+            "(grado 3-4, FRC unica, <=2 toponimi). Restano %d.",
+            n_frc, n_pre_frc, len(gdf_intersezioni),
+        )
+
+    # --- Filtro 3: cluster di prossimita' ---
+    if len(gdf_intersezioni) > 1 and raggio_cluster_m > 0:
+        gdf_intersezioni = _cluster_intersezioni_vicine(
+            gdf_intersezioni, raggio_cluster_m,
+        )
+
+    log.info(
+        "Filtro falsi incroci completato: %d -> %d intersezioni.",
+        n_prima, len(gdf_intersezioni),
+    )
+    return gdf_intersezioni
+
+
+def _cluster_intersezioni_vicine(
+    gdf: gpd.GeoDataFrame,
+    raggio_m: float,
+) -> gpd.GeoDataFrame:
+    """Fonde intersezioni vicine con toponimi sovrapposti.
+
+    Nodi entro ``raggio_m`` che condividono almeno un toponimo vengono
+    raggruppati. Per ogni cluster si tiene il nodo con il grado piu' alto
+    (piu' archi convergenti) come rappresentante, spostandone la geometria
+    al baricentro del cluster. Gli altri nodi del cluster vengono rimossi.
+    """
+    from scipy.spatial import cKDTree
+
+    coords = np.column_stack([gdf.geometry.x.to_numpy(), gdf.geometry.y.to_numpy()])
+    tree = cKDTree(coords)
+    coppie = tree.query_pairs(r=float(raggio_m), output_type="ndarray")
+
+    if len(coppie) == 0:
+        return gdf
+
+    topo_sets = [set(t) for t in gdf["toponimi"].values]
+    idx_array = gdf.index.to_numpy()
+
+    n = len(gdf)
+    parent = np.arange(n, dtype=np.int64)
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[max(ri, rj)] = min(ri, rj)
+
+    for i, j in coppie:
+        if topo_sets[i] & topo_sets[j]:
+            union(int(i), int(j))
+
+    cluster_ids = np.array([find(i) for i in range(n)], dtype=np.int64)
+    _, cluster_labels = np.unique(cluster_ids, return_inverse=True)
+
+    n_archi_vals = gdf["n_archi"].to_numpy()
+    keep_mask = np.zeros(n, dtype=bool)
+
+    for cl in range(cluster_labels.max() + 1):
+        membri = np.where(cluster_labels == cl)[0]
+        if len(membri) == 1:
+            keep_mask[membri[0]] = True
+            continue
+        rappresentante = membri[np.argmax(n_archi_vals[membri])]
+        keep_mask[rappresentante] = True
+        cx = coords[membri, 0].mean()
+        cy = coords[membri, 1].mean()
+        real_idx = idx_array[rappresentante]
+        gdf.at[real_idx, "geometry"] = Point(cx, cy)
+        merged_topo = set()
+        merged_archi = set()
+        for m in membri:
+            merged_topo.update(topo_sets[m])
+            merged_archi.update(gdf.at[idx_array[m], "archi"])
+        gdf.at[real_idx, "toponimi"] = sorted(merged_topo)
+        gdf.at[real_idx, "archi"] = sorted(merged_archi)
+        gdf.at[real_idx, "n_archi"] = len(merged_archi)
+
+    n_rimossi = int((~keep_mask).sum())
+    n_cluster_multi = int((np.bincount(cluster_labels) > 1).sum())
+    gdf = gdf.loc[idx_array[keep_mask]].copy()
+    log.info(
+        "Cluster prossimita' (raggio=%.0f m): %d cluster con >1 nodo, "
+        "%d nodi ridondanti rimossi. Restano %d.",
+        raggio_m, n_cluster_multi, n_rimossi, len(gdf),
+    )
+    return gdf
 
 
 # ---------------------------------------------------------------------------
@@ -1183,6 +1328,14 @@ def abbina_incidenti(
     # Log riassuntivo.
     conteggi = out["match_type"].value_counts().to_dict()
     log.info("  Esito matching: %s", conteggi)
+
+    # Verifica: nessun doppio conteggio.
+    n_tot = sum(conteggi.values())
+    assert n_tot == len(gdf_incidenti), (
+        f"Doppio conteggio nel matching: {n_tot} assegnazioni vs "
+        f"{len(gdf_incidenti)} incidenti"
+    )
+
     return out
 
 
@@ -1246,10 +1399,14 @@ def main(config: dict[str, Any]) -> None:
         config.get("matching", {}).get("tolleranza_nodo", 0.5)
     )
     filtra_incroci = config.get("matching", {}).get("filtra_falsi_incroci", True)
+    raggio_cluster_int = float(
+        config.get("matching", {}).get("raggio_cluster_intersezioni", 30.0)
+    )
     gdf_intersezioni, df_archi_nodi = estrai_intersezioni(
         gdf_rete,
         tolleranza_m=tolleranza_nodo,
         filtra_falsi_incroci=filtra_incroci,
+        raggio_cluster_intersezioni_m=raggio_cluster_int,
     )
 
     # Per la segmentazione servono anche tutti i nodi (non solo le
