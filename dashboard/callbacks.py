@@ -188,10 +188,18 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
     def aggiorna_sito_sel(click_data):
         if not click_data:
             raise PreventUpdate
-        idx = click_data["points"][0].get("customdata")
+        pt = click_data["points"][0]
+        idx = pt.get("customdata")
+        if idx is None:
+            idx = pt.get("pointIndex")
         if idx is None:
             raise PreventUpdate
-        return df.loc[idx].to_dict()
+        if isinstance(idx, list):
+            idx = idx[0]
+        try:
+            return df.loc[idx].to_dict()
+        except KeyError:
+            raise PreventUpdate
 
     # ==================================================================
     # Callback 4: dettaglio sito
