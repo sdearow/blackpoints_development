@@ -206,13 +206,20 @@ def classifica_fasce(
 def classifica_matrice(df: pd.DataFrame) -> pd.Series:
     """Classifica in 4 quadranti (excess_EPDO × severita').
 
-    Asse X: excess_EPDO_i (alto/basso rispetto alla mediana)
-    Asse Y: B (severita', alto/basso rispetto alla mediana)
+    Asse X: excess_EPDO_i (alto/basso rispetto al 75° percentile)
+    Asse Y: B (severita', alto/basso rispetto al 75° percentile)
+
+    I percentili sono calcolati sui soli siti con almeno un incidente,
+    altrimenti la massa di zeri sposta le soglie a zero.
+    Siti senza incidenti vanno direttamente in Q4 (monitoraggio).
     """
-    med_excess = df["A"].median()
-    med_sev = df["B"].median()
-    alto_exc = df["A"] > med_excess
-    alto_sev = df["B"] > med_sev
+    ha_incidenti = df["n_incidenti"] > 0
+    a_pos = df.loc[ha_incidenti, "A"]
+    b_pos = df.loc[ha_incidenti, "B"]
+    soglia_exc = np.nanpercentile(a_pos, 75) if len(a_pos) > 0 else 0.0
+    soglia_sev = np.nanpercentile(b_pos, 75) if len(b_pos) > 0 else 0.0
+    alto_exc = df["A"] > soglia_exc
+    alto_sev = df["B"] > soglia_sev
 
     quadrante = pd.Series("Q4_monitoraggio", index=df.index)
     quadrante[alto_exc & alto_sev] = "Q1_intervento_urgente"
