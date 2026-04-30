@@ -53,6 +53,20 @@ def _msg_placeholder(testo: str) -> Any:
                                 "fontSize": "14px"})
 
 
+def _ricalcola_icp_fasce(df: pd.DataFrame, pesi: dict) -> pd.DataFrame:
+    """Ricalcola ICP e fasce con pesi custom, restituendo una copia."""
+    tot = sum(pesi.values()) or 1
+    wA, wB, wC, wD = pesi["A"] / tot, pesi["B"] / tot, pesi["C"] / tot, pesi["D"] / tot
+    out = df.copy()
+    out["ICP"] = wA * df["A_norm"] + wB * df["B_norm"] + wC * df["C_norm"] + wD * df["D_norm"]
+    soglie = [np.nanpercentile(out["ICP"], p) for p in [20, 40, 60, 80]]
+    condizioni = [out["ICP"] <= soglie[0], out["ICP"] <= soglie[1],
+                  out["ICP"] <= soglie[2], out["ICP"] <= soglie[3]]
+    nomi = ["monitoraggio", "bassa", "media", "alta", "altissima"]
+    out["fascia_priorita"] = np.select(condizioni, nomi[:4], default="altissima")
+    return out
+
+
 def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
     from dashboard.layouts import (tab_mappa, tab_spf, tab_eb,
                                    tab_sensitivita, tab_decisionale)
@@ -76,6 +90,19 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         return tab_decisionale()
 
     # ==================================================================
+    # Callback 1b: aggiorna store pesi dagli slider
+    # ==================================================================
+    @app.callback(
+        Output("pesi-correnti", "data"),
+        Input("peso-A", "value"),
+        Input("peso-B", "value"),
+        Input("peso-C", "value"),
+        Input("peso-D", "value"),
+    )
+    def aggiorna_pesi(pA, pB, pC, pD):
+        return {"A": pA or 0, "B": pB or 0, "C": pC or 0, "D": pD or 0}
+
+    # ==================================================================
     # Callback 2: mappa principale
     # ==================================================================
     @app.callback(
@@ -83,11 +110,13 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Input("filtro-tipo", "value"),
         Input("filtro-fascia", "value"),
         Input("slider-top-n", "value"),
+        Input("pesi-correnti", "data"),
     )
-    def aggiorna_mappa(tipi, fasce, top_n):
+    def aggiorna_mappa(tipi, fasce, top_n, pesi):
         try:
-            mask = df["tipo_sito"].isin(tipi or []) & df["fascia_priorita"].isin(fasce or [])
-            sub = df.loc[mask].nlargest(top_n, "ICP")
+            df_w = _ricalcola_icp_fasce(df, pesi) if pesi else df
+            mask = df_w["tipo_sito"].isin(tipi or []) & df_w["fascia_priorita"].isin(fasce or [])
+            sub = df_w.loc[mask].nlargest(top_n, "ICP")
             fig = go.Figure()
 
             for fascia in ORDINE_FASCE:
@@ -124,8 +153,7 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                     fig.add_trace(_ScatterMap(
                         lat=inter["lat"].values, lon=inter["lon"].values,
                         mode="markers",
-                        marker=dict(size=8, color=COLORI_FASCE[fascia], opacity=0.9,
-                                    line=dict(width=1, color="#11111b")),
+                        marker=dict(size=8, color=COLORI_FASCE[fascia], opacity=0.9),
                         text=hover, hoverinfo="text",
                         name=f"Int. {fascia}", customdata=inter.index.tolist(),
                     ))
@@ -137,9 +165,10 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                     zoom=11,
                 ),
             }
+            map_layout = {**_LAYOUT_BASE, **layout_map,
+                          "margin": dict(l=0, r=0, t=0, b=0)}
             fig.update_layout(
-                **_LAYOUT_BASE, **layout_map,
-                margin=dict(l=0, r=0, t=0, b=0),
+                **map_layout,
                 legend=dict(bgcolor="#11111b", font=dict(color=_TESTO, size=10),
                             x=0.01, y=0.99, xanchor="left", yanchor="top"),
                 showlegend=True, uirevision="mappa",
@@ -566,15 +595,17 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Output("tabella-top", "columns"),
         Input("tabs-principale", "value"),
         Input("dec-filtro-categoria", "value"),
+        Input("pesi-correnti", "data"),
     )
-    def aggiorna_decisionale(tab, categorie):
+    def aggiorna_decisionale(tab, categorie, pesi):
         if tab != "decisionale":
             raise PreventUpdate
 
         try:
-            col_cat = ("spf_categoria" if "spf_categoria" in df.columns
+            df_w = _ricalcola_icp_fasce(df, pesi) if pesi else df
+            col_cat = ("spf_categoria" if "spf_categoria" in df_w.columns
                        else "categoria_spf")
-            sub = df.copy()
+            sub = df_w.copy()
             if categorie:
                 sub = sub[sub[col_cat].isin(categorie)]
 
