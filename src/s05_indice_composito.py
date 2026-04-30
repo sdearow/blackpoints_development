@@ -34,25 +34,32 @@ def calcola_componente_A(df: pd.DataFrame) -> pd.Series:
     return df["excess_EPDO_i"].fillna(0.0).astype(float)
 
 
-def calcola_componente_B(df: pd.DataFrame) -> pd.Series:
+def calcola_componente_B(df: pd.DataFrame, n_min: int = 5) -> pd.Series:
     """Componente B — indice di severita'.
 
-    B_i = (n_mortali + n_feriti) / n_incidenti
+    B_i = (n_mortali + n_feriti) / n_incidenti * credibilita'
+    dove credibilita' = min(n_incidenti, n_min) / n_min.
+    Smorza i siti con pochi incidenti dove il rapporto e' rumoroso.
     """
     n = df["n_incidenti"].astype(float).clip(lower=1e-9)
     gravi = df["n_mortali"].fillna(0).astype(float) + df["n_feriti"].fillna(0).astype(float)
-    return (gravi / n).where(df["n_incidenti"] > 0, 0.0)
+    ratio = (gravi / n).where(df["n_incidenti"] > 0, 0.0)
+    cred = (df["n_incidenti"].clip(upper=n_min).astype(float) / n_min)
+    return ratio * cred
 
 
-def calcola_componente_C(df: pd.DataFrame) -> pd.Series:
+def calcola_componente_C(df: pd.DataFrame, n_min: int = 5) -> pd.Series:
     """Componente C — indice di vulnerabilita' utenti.
 
-    C_i = n_pedoni / n_incidenti
+    C_i = n_pedoni / n_incidenti * credibilita'
+    dove credibilita' = min(n_incidenti, n_min) / n_min.
     """
     n = df["n_incidenti"].astype(float).clip(lower=1e-9)
-    return (df["n_pedoni"].fillna(0).astype(float) / n).where(
+    ratio = (df["n_pedoni"].fillna(0).astype(float) / n).where(
         df["n_incidenti"] > 0, 0.0
     )
+    cred = (df["n_incidenti"].clip(upper=n_min).astype(float) / n_min)
+    return ratio * cred
 
 
 def calcola_componente_D_segmenti(df: pd.DataFrame) -> pd.Series:
