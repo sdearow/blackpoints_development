@@ -108,18 +108,57 @@ def calcola_componente_D_intersezioni(
 
 
 def normalizza_robusta(
-    serie: pd.Series, p_min: float = 1.0, p_max: float = 99.0
+    serie: pd.Series,
+    p_min: float = 1.0,
+    p_max: float = 99.0,
+    soglia_zero_pct: float = 50.0,
 ) -> pd.Series:
     """Normalizza su scala 0-100 usando percentili robusti.
 
-    Valori sotto p_min -> 0, sopra p_max -> 100.
+    Se la percentuale di zeri supera ``soglia_zero_pct``, applica la
+    normalizzazione zero-inflated: i valori nulli restano 0, quelli
+    positivi vengono normalizzati a [1, 100] sulla sotto-distribuzione
+    dei soli valori > 0. Questo evita che componenti con molti zeri
+    (es. severita' sui segmenti, dove <1% ha feriti gravi) collassino
+    tutte a zero.
     """
+    vals = serie.dropna()
+    if len(vals) == 0:
+        return pd.Series(0.0, index=serie.index)
+
+    pct_zero = (vals == 0).sum() / len(vals) * 100.0
+    if pct_zero > soglia_zero_pct:
+        return _normalizza_zero_inflated(serie, p_min, p_max)
+
     lo = np.nanpercentile(serie, p_min)
     hi = np.nanpercentile(serie, p_max)
     if hi <= lo:
         return pd.Series(0.0, index=serie.index)
     norm = 100.0 * (serie - lo) / (hi - lo)
     return norm.clip(lower=0.0, upper=100.0)
+
+
+def _normalizza_zero_inflated(
+    serie: pd.Series, p_min: float, p_max: float,
+) -> pd.Series:
+    """Normalizzazione per distribuzioni zero-inflated.
+
+    Zero -> 0.0, valori positivi -> [1, 100] usando i percentili della
+    sotto-distribuzione dei soli valori > 0.
+    """
+    result = pd.Series(0.0, index=serie.index)
+    mask_pos = serie.fillna(0) > 0
+    if mask_pos.sum() == 0:
+        return result
+    positivi = serie.loc[mask_pos]
+    lo = np.nanpercentile(positivi, p_min)
+    hi = np.nanpercentile(positivi, p_max)
+    if hi <= lo:
+        result.loc[mask_pos] = 50.0
+        return result
+    norm = 1.0 + 99.0 * (positivi - lo) / (hi - lo)
+    result.loc[mask_pos] = norm.clip(lower=1.0, upper=100.0)
+    return result
 
 
 def calcola_icp(
@@ -195,6 +234,7 @@ def assembla_priorita(
     soglie_percentili: list[float],
     p_min: float,
     p_max: float,
+    soglia_zero_pct: float = 50.0,
 ) -> pd.DataFrame:
     """Calcola componenti, normalizza, computa ICP e classifica."""
     df = df.copy()
@@ -205,11 +245,11 @@ def assembla_priorita(
     df["C"] = calcola_componente_C(df)
     # D deve essere gia' presente nel DataFrame.
 
-    # Normalizzazione robusta.
-    df["A_norm"] = normalizza_robusta(df["A"], p_min, p_max)
-    df["B_norm"] = normalizza_robusta(df["B"], p_min, p_max)
-    df["C_norm"] = normalizza_robusta(df["C"], p_min, p_max)
-    df["D_norm"] = normalizza_robusta(df["D"], p_min, p_max)
+    # Normalizzazione robusta (zero-inflated se la componente ha troppi zeri).
+    df["A_norm"] = normalizza_robusta(df["A"], p_min, p_max, soglia_zero_pct)
+    df["B_norm"] = normalizza_robusta(df["B"], p_min, p_max, soglia_zero_pct)
+    df["C_norm"] = normalizza_robusta(df["C"], p_min, p_max, soglia_zero_pct)
+    df["D_norm"] = normalizza_robusta(df["D"], p_min, p_max, soglia_zero_pct)
 
     # ICP e classificazione.
     df["ICP"] = calcola_icp(df, pesi)
@@ -282,6 +322,7 @@ def main(config: dict[str, Any]) -> None:
     pesi = config["indice_composito"]["pesi"]
     p_min = float(config["indice_composito"]["percentile_min"])
     p_max = float(config["indice_composito"]["percentile_max"])
+    soglia_zero = float(config["indice_composito"].get("soglia_zero_pct", 50.0))
     soglie = [float(s) for s in config["classificazione"]["soglie_percentili"]]
 
     # Componente D.
@@ -291,9 +332,9 @@ def main(config: dict[str, Any]) -> None:
 
     # Assemblaggio.
     log.info("Assemblaggio indice composito segmenti...")
-    df_seg = assembla_priorita(df_seg, "segmento", pesi, soglie, p_min, p_max)
+    df_seg = assembla_priorita(df_seg, "segmento", pesi, soglie, p_min, p_max, soglia_zero)
     log.info("Assemblaggio indice composito intersezioni...")
-    df_int = assembla_priorita(df_int, "intersezione", pesi, soglie, p_min, p_max)
+    df_int = assembla_priorita(df_int, "intersezione", pesi, soglie, p_min, p_max, soglia_zero)
 
     # Riassunto.
     for nome, df in (("segmenti", df_seg), ("intersezioni", df_int)):
