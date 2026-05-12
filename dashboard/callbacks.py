@@ -119,44 +119,58 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             sub = df_w.loc[mask].nlargest(top_n, "ICP")
             fig = go.Figure()
 
-            for fascia in ORDINE_FASCE:
-                if fascia not in (fasce or []):
-                    continue
-                pf = sub[sub["fascia_priorita"] == fascia]
-                if pf.empty:
-                    continue
+            seg = sub[sub["tipo_sito"] == "segmento"] if "segmento" in (tipi or []) else sub.iloc[:0]
+            if not seg.empty:
+                hover = [
+                    f"<b>{t}</b><br>ICP: {icp:.1f} | {f}<br>Inc: {int(n)}"
+                    for t, icp, f, n in zip(
+                        seg.get("toponimo", pd.Series("", index=seg.index)),
+                        seg["ICP"], seg["fascia_priorita"],
+                        seg.get("n_incidenti", pd.Series(0, index=seg.index)))
+                ]
+                fig.add_trace(_ScatterMap(
+                    lat=seg["lat"].values, lon=seg["lon"].values,
+                    mode="markers",
+                    marker=dict(
+                        size=7, opacity=0.85,
+                        color=seg["ICP"].values,
+                        colorscale=[[0, "#f9e2af"], [0.5, "#e67e22"], [1, "#8b0000"]],
+                        cmin=float(sub["ICP"].min()) if len(sub) > 0 else 0,
+                        cmax=float(sub["ICP"].max()) if len(sub) > 0 else 1,
+                        colorbar=dict(title="ICP", len=0.5, y=0.3,
+                                      tickfont=dict(color=_TESTO, size=9),
+                                      titlefont=dict(color=_TESTO, size=10)),
+                    ),
+                    text=hover, hoverinfo="text",
+                    name="Segmenti", customdata=seg.index.tolist(),
+                ))
 
-                seg = pf[pf["tipo_sito"] == "segmento"]
-                if not seg.empty and "segmento" in (tipi or []):
-                    hover = [
-                        f"<b>{t}</b><br>ICP: {icp:.1f} | {fascia}<br>Inc: {int(n)}"
-                        for t, icp, n in zip(
-                            seg.get("toponimo", pd.Series("", index=seg.index)),
-                            seg["ICP"], seg.get("n_incidenti", pd.Series(0, index=seg.index)))
-                    ]
-                    fig.add_trace(_ScatterMap(
-                        lat=seg["lat"].values, lon=seg["lon"].values,
-                        mode="markers",
-                        marker=dict(size=6, color=COLORI_FASCE[fascia], opacity=0.8),
-                        text=hover, hoverinfo="text",
-                        name=f"Seg. {fascia}", customdata=seg.index.tolist(),
-                    ))
-
-                inter = pf[pf["tipo_sito"] == "intersezione"]
-                if not inter.empty and "intersezione" in (tipi or []):
-                    hover = [
-                        f"<b>Int. #{int(nid)}</b><br>ICP: {icp:.1f} | {fascia}<br>Inc: {int(n)}"
-                        for nid, icp, n in zip(
-                            inter.get("id_nodo", pd.Series(0, index=inter.index)),
-                            inter["ICP"], inter.get("n_incidenti", pd.Series(0, index=inter.index)))
-                    ]
-                    fig.add_trace(_ScatterMap(
-                        lat=inter["lat"].values, lon=inter["lon"].values,
-                        mode="markers",
-                        marker=dict(size=8, color=COLORI_FASCE[fascia], opacity=0.9),
-                        text=hover, hoverinfo="text",
-                        name=f"Int. {fascia}", customdata=inter.index.tolist(),
-                    ))
+            inter = sub[sub["tipo_sito"] == "intersezione"] if "intersezione" in (tipi or []) else sub.iloc[:0]
+            if not inter.empty:
+                hover = [
+                    f"<b>Int. #{int(nid)}</b><br>ICP: {icp:.1f} | {f}<br>Inc: {int(n)}"
+                    for nid, icp, f, n in zip(
+                        inter.get("id_nodo", pd.Series(0, index=inter.index)),
+                        inter["ICP"], inter["fascia_priorita"],
+                        inter.get("n_incidenti", pd.Series(0, index=inter.index)))
+                ]
+                fig.add_trace(_ScatterMap(
+                    lat=inter["lat"].values, lon=inter["lon"].values,
+                    mode="markers",
+                    marker=dict(
+                        size=9, opacity=0.9,
+                        color=inter["ICP"].values,
+                        colorscale=[[0, "#f9e2af"], [0.5, "#e67e22"], [1, "#8b0000"]],
+                        cmin=float(sub["ICP"].min()) if len(sub) > 0 else 0,
+                        cmax=float(sub["ICP"].max()) if len(sub) > 0 else 1,
+                        showscale=seg.empty,
+                        colorbar=dict(title="ICP", len=0.5, y=0.3,
+                                      tickfont=dict(color=_TESTO, size=9),
+                                      titlefont=dict(color=_TESTO, size=10)),
+                    ),
+                    text=hover, hoverinfo="text",
+                    name="Intersezioni", customdata=inter.index.tolist(),
+                ))
 
             layout_map = {
                 _MAP_KEY: dict(
@@ -252,7 +266,7 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                 r=[50]*5, theta=labs + [labs[0]],
                 line=dict(color="#6c7086", width=1, dash="dot"), name="Media"))
             fig_r.update_layout(
-                **_LAYOUT_BASE,
+                **{**_LAYOUT_BASE, "margin": dict(l=30, r=30, t=20, b=20)},
                 polar=dict(bgcolor=_SFONDO,
                            radialaxis=dict(range=[0, 100], gridcolor=_GRIGLIA,
                                            tickfont=dict(size=9, color="#6c7086")),
@@ -260,7 +274,6 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                                             tickfont=dict(size=10, color=_TESTO))),
                 showlegend=True,
                 legend=dict(font=dict(size=9, color=_TESTO), bgcolor=_SFONDO),
-                margin=dict(l=30, r=30, t=20, b=20),
             )
 
             grav = {"Mortali": int(sito.get("n_mortali", 0)),
@@ -269,10 +282,9 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             fig_b = go.Figure(go.Bar(
                 x=list(grav.values()), y=list(grav.keys()), orientation="h",
                 marker_color=["#8b0000", "#e67e22", "#f1c40f"]))
-            fig_b.update_layout(**_LAYOUT_BASE,
+            fig_b.update_layout(**{**_LAYOUT_BASE, "margin": dict(l=80, r=20, t=10, b=30)},
                                 xaxis=dict(gridcolor=_GRIGLIA, tickfont=dict(size=10)),
-                                yaxis=dict(tickfont=dict(size=10)),
-                                margin=dict(l=80, r=20, t=10, b=30))
+                                yaxis=dict(tickfont=dict(size=10)))
             return header, fig_r, fig_b
         except Exception:
             log.error("Errore in aggiorna_dettaglio:\n%s", traceback.format_exc())
@@ -658,14 +670,18 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                 legend=dict(bgcolor=_SFONDO,
                             font=dict(size=10, color=_TESTO)))
 
-            cols_tab = ["tipo_sito", "toponimo", col_cat, "fascia_priorita",
-                        "quadrante_rischio", "ICP", "A_norm", "B_norm",
+            cols_tab = ["rank", "tipo_sito", "toponimo", "fascia_priorita",
+                        "ICP", "A_norm", "B_norm",
                         "C_norm", "D_norm", "n_incidenti", "excess_EPDO_i",
                         "costo_sociale_eccesso_eur"]
-            cols_tab = [c for c in cols_tab if c in sub.columns]
-            top50 = sub.nlargest(50, "ICP")[cols_tab].round(2)
+            top_seg = sub[sub["tipo_sito"] == "segmento"].nlargest(20, "ICP")
+            top_int = sub[sub["tipo_sito"] == "intersezione"].nlargest(20, "ICP")
+            top_combined = pd.concat([top_seg, top_int]).sort_values("ICP", ascending=False)
+            top_combined.insert(0, "rank", range(1, len(top_combined) + 1))
+            cols_tab = [c for c in cols_tab if c in top_combined.columns]
+            top_combined = top_combined[cols_tab].round(2)
             return (fig_sc, fig_bar,
-                    top50.to_dict("records"),
+                    top_combined.to_dict("records"),
                     [{"name": c, "id": c} for c in cols_tab])
         except Exception:
             log.error("Errore in aggiorna_decisionale:\n%s",
