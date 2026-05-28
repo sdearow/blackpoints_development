@@ -27,7 +27,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from statsmodels.genmod.families import NegativeBinomial
 
 from src.config import RADICE_PROGETTO, carica_config
 
@@ -256,52 +255,125 @@ def calibra_nb2(
 ) -> dict[str, Any]:
     """Calibra un modello NB2 (binomiale negativa) con statsmodels.
 
+    Usa ``statsmodels.discrete.NegativeBinomialP(p=2)`` che stima il
+    parametro di sovradispersione ``alpha`` direttamente dai dati via MLE
+    (a differenza del GLM con ``NegativeBinomial(alpha=...)`` che richiede
+    alpha fissato a priori e restituisce la dispersione di Pearson, non la
+    sovradispersione NB2).
+
+    Filtra preventivamente le righe con NaN nelle covariate o nell'offset
+    per garantire che ``df`` sia il campione effettivo del fit.
+
     Restituisce un dizionario con:
-    - ``modello``: oggetto risultato del fit
-    - ``coefficienti``: dict nome -> valore
+    - ``coefficienti``: dict nome -> valore (covariate, intercetta)
     - ``p_values``: dict nome -> p-value
-    - ``alpha``: parametro di sovradispersione (1/k in notazione statsmodels)
-    - ``k``: parametro k = 1/alpha (per Empirical Bayes)
+    - ``alpha``: sovradispersione NB2 stimata (Var(Y) = mu + alpha*mu^2)
+    - ``k``: ``1/alpha`` (parametro usato dall'Empirical Bayes)
     - ``aic``, ``bic``: criteri informativi
-    - ``n_siti``: numero di osservazioni
-    - ``predetti``: array dei valori predetti E(Y)
+    - ``n_siti``: numero di osservazioni nel fit
     - ``converged``: bool
     """
-    if len(df) < 10:
-        log.warning(
-            "Troppo pochi siti (%d) per calibrare NB2, salto", len(df)
+    cols_richieste = list(formula_covariate) + [offset_col, "n_incidenti"]
+    df_fit = df.dropna(subset=cols_richieste).copy()
+    if len(df_fit) < len(df):
+        log.info(
+            "  dropna su %s: %d -> %d righe",
+            cols_richieste, len(df), len(df_fit),
         )
-        return {"converged": False, "n_siti": len(df)}
 
-    y = df["n_incidenti"].to_numpy(dtype=float)
-    X = sm.add_constant(df[formula_covariate].to_numpy(dtype=float))
-    offset = df[offset_col].to_numpy(dtype=float)
+    if len(df_fit) < 10:
+        log.warning(
+            "Troppo pochi siti (%d) per calibrare NB2, salto", len(df_fit)
+        )
+        return {"converged": False, "n_siti": len(df_fit)}
+
+    y = df_fit["n_incidenti"].to_numpy(dtype=float)
+    X = sm.add_constant(df_fit[formula_covariate].to_numpy(dtype=float))
+    offset = df_fit[offset_col].to_numpy(dtype=float)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        # Warm-start dai coefficienti di un GLM Poisson: rende il fit NB2
+        # robusto anche su categorie con bassa sovradispersione.
+        start: np.ndarray | None
         try:
-            modello = sm.GLM(
-                y,
-                X,
-                family=NegativeBinomial(alpha=1.0),
-                offset=offset,
-            )
-            risultato = modello.fit(
-                maxiter=100, method="IRLS", scale="X2"
-            )
-        except Exception as e:
-            log.warning("Calibrazione NB2 fallita: %s", e)
-            return {"converged": False, "n_siti": len(df)}
+            poisson_fit = sm.GLM(
+                y, X, family=sm.families.Poisson(), offset=offset
+            ).fit(maxiter=100)
+            start = np.concatenate([poisson_fit.params, [0.1]])
+        except Exception:
+            start = None
 
+        risultato = None
+        for metodo in ("newton", "bfgs", "nm"):
+            try:
+                fit_kwargs: dict[str, Any] = dict(
+                    disp=0, maxiter=500, method=metodo
+                )
+                if start is not None:
+                    fit_kwargs["start_params"] = start
+                cand = sm.NegativeBinomialP(y, X, p=2, offset=offset).fit(
+                    **fit_kwargs
+                )
+            except Exception:
+                continue
+            alpha_cand = float(cand.params[-1])
+            converged_cand = bool(cand.mle_retvals.get("converged", False))
+            # Accetta anche fit "non convergenti" se alpha e' finito e
+            # non patologico (NM spesso non setta il flag).
+            if np.isfinite(alpha_cand) and -1e-3 < alpha_cand < 1e6:
+                risultato = cand
+                if converged_cand and alpha_cand > 0:
+                    break
+
+    if risultato is None:
+        # Fallback: dati senza sovradispersione apprezzabile -> GLM Poisson,
+        # k = inf (peso EB w -> 0 quando E*k -> inf, EB -> O: nessuno shrinkage).
+        if start is None:
+            log.warning("Calibrazione NB2 fallita e Poisson non disponibile")
+            return {"converged": False, "n_siti": len(df_fit)}
+        log.info(
+            "  NB2 non stabile (sovradispersione trascurabile): fallback Poisson"
+        )
+        nomi = ["const"] + list(formula_covariate)
+        coefficienti = dict(zip(nomi, poisson_fit.params.tolist()))
+        try:
+            p_values = dict(zip(nomi, poisson_fit.pvalues.tolist()))
+        except Exception:
+            p_values = {n: float("nan") for n in nomi}
+        predetti = np.asarray(poisson_fit.predict(X, offset=offset))
+        return {
+            "modello": poisson_fit,
+            "coefficienti": coefficienti,
+            "p_values": p_values,
+            "alpha": 1e-6,
+            "k": 1.0 / 1e-6,
+            "aic": float(poisson_fit.aic) if hasattr(poisson_fit, "aic") else None,
+            "bic": None,
+            "n_siti": int(len(df_fit)),
+            "predetti": predetti,
+            "converged": True,
+            "nomi_covariate": list(formula_covariate),
+            "famiglia": "Poisson",
+        }
+
+    # Parametri di regressione: tutti tranne l'ultimo (che e' alpha).
     nomi = ["const"] + list(formula_covariate)
-    coefficienti = dict(zip(nomi, risultato.params))
-    p_values = dict(zip(nomi, risultato.pvalues))
+    coef_array = np.asarray(risultato.params[:-1])
+    try:
+        pval_array = np.asarray(risultato.pvalues[:-1])
+        p_values = dict(zip(nomi, pval_array.tolist()))
+    except Exception:
+        # Hessian non invertibile: p-values non disponibili.
+        p_values = {n: float("nan") for n in nomi}
+    coefficienti = dict(zip(nomi, coef_array.tolist()))
 
-    # alpha di sovradispersione dalla famiglia NB2.
-    alpha = float(risultato.scale)
-    k = 1.0 / alpha if alpha > 0 else float("inf")
+    # alpha: ultimo parametro. Per NB2: Var(Y) = mu + alpha*mu^2. Clip
+    # inferiore per evitare k -> inf (sovradispersione trascurabile).
+    alpha = max(float(risultato.params[-1]), 1e-6)
+    k = 1.0 / alpha
 
-    predetti = risultato.predict(X, offset=offset)
+    predetti = np.asarray(risultato.predict(X, offset=offset))
 
     return {
         "modello": risultato,
@@ -310,11 +382,11 @@ def calibra_nb2(
         "alpha": alpha,
         "k": k,
         "aic": float(risultato.aic) if hasattr(risultato, "aic") else None,
-        "bic": float(risultato.bic_llf) if hasattr(risultato, "bic_llf") else float(risultato.bic) if hasattr(risultato, "bic") else None,
-        "n_siti": int(len(df)),
+        "bic": float(risultato.bic) if hasattr(risultato, "bic") else None,
+        "n_siti": int(len(df_fit)),
         "predetti": predetti,
         "converged": True,
-        "nomi_covariate": formula_covariate,
+        "nomi_covariate": list(formula_covariate),
     }
 
 
@@ -356,7 +428,12 @@ def applica_predizioni(
     risultati_per_cat: dict[str, dict[str, Any]],
     col_categoria: str,
 ) -> pd.DataFrame:
-    """Aggiunge le colonne ``E_i`` (predetto SPF) e ``k`` al DataFrame."""
+    """Aggiunge le colonne ``E_i`` (predetto SPF) e ``k_spf`` al DataFrame.
+
+    Le predizioni vengono calcolate solo per i siti senza NaN nelle
+    covariate del modello adottato; i siti con covariate mancanti hanno
+    ``E_i = NaN`` e vengono di conseguenza esclusi dall'EB.
+    """
     df = df.copy()
     df["E_i"] = np.nan
     df["k_spf"] = np.nan
@@ -365,19 +442,24 @@ def applica_predizioni(
     for cat, ris in risultati_per_cat.items():
         if not ris.get("converged", False):
             continue
-        mask = df[col_categoria] == cat
-        idx_mask = df.index[mask]
-        if len(idx_mask) == 0:
+        mask_cat = df[col_categoria] == cat
+        if not mask_cat.any():
             continue
 
         formula = ris["nomi_covariate"]
+        cols_richieste = list(formula) + ["log_n_anni"]
+        mask_valido = mask_cat & df[cols_richieste].notna().all(axis=1)
+        if not mask_valido.any():
+            continue
+
         X = sm.add_constant(
-            df.loc[mask, formula].to_numpy(dtype=float)
+            df.loc[mask_valido, formula].to_numpy(dtype=float),
+            has_constant="add",
         )
-        offset = df.loc[mask, "log_n_anni"].to_numpy(dtype=float)
+        offset = df.loc[mask_valido, "log_n_anni"].to_numpy(dtype=float)
         predetti = ris["modello"].predict(X, offset=offset)
-        df.loc[mask, "E_i"] = predetti
-        df.loc[mask, "k_spf"] = ris["k"]
+        df.loc[mask_valido, "E_i"] = np.asarray(predetti)
+        df.loc[mask_valido, "k_spf"] = ris["k"]
 
     return df
 
@@ -482,10 +564,27 @@ def main(config: dict[str, Any]) -> None:
             anni_sel, len(gdf_matched), n_prima,
         )
 
-    # --- n_anni: numero di anni selezionati ---
-    abbinati = gdf_matched.loc[gdf_matched["match_type"] != "non_abbinato"]
-    n_anni = float(abbinati["anno"].nunique())
-    log.info("Anni distinti con incidenti abbinati: %d", int(n_anni))
+    # --- n_anni: lunghezza del periodo di osservazione ---
+    # Si usa il numero di anni di calendario coperti, NON nunique() degli anni
+    # con incidenti: un anno senza incidenti osservati va comunque conteggiato
+    # nell'offset (altrimenti si gonfiano artificialmente le predizioni SPF).
+    if anni_sel:
+        n_anni = float(len(anni_sel))
+        log.info(
+            "Periodo SPF (da config.spf.anni_incidenti): %d anni (%s)",
+            int(n_anni), anni_sel,
+        )
+    else:
+        abbinati = gdf_matched.loc[gdf_matched["match_type"] != "non_abbinato"]
+        anni_validi = abbinati["anno"].dropna()
+        if len(anni_validi) == 0:
+            raise RuntimeError("Nessun incidente abbinato: impossibile derivare il periodo SPF")
+        anno_min, anno_max = int(anni_validi.min()), int(anni_validi.max())
+        n_anni = float(anno_max - anno_min + 1)
+        log.info(
+            "Periodo SPF (da estensione dati matched): %d-%d -> %d anni",
+            anno_min, anno_max, int(n_anni),
+        )
 
     # --- Esclusione segmenti di altri enti ---
     if "is_extraurbana_altri_enti" in gdf_segmenti.columns:
@@ -576,27 +675,33 @@ def main(config: dict[str, Any]) -> None:
         df_int, "categoria_spf", covariate_int
     )
 
-    # Modelli estesi: aggiungi covariate una alla volta e confronta AIC.
+    # Modelli estesi: aggiungi covariate e confronta AIC sullo STESSO campione
+    # del modello esteso (il base viene rifittato escludendo le righe con NaN
+    # nelle covariate estese, altrimenti l'AIC non e' confrontabile).
     log.info("=== Modelli estesi segmenti ===")
-    covariate_estese_seg = ["log_tgm", "log_lunghezza", "v85_medio", "iqr_norm_medio"]
+    covariate_estese_seg = ["log_tgm", "log_lunghezza", "v85_medio", "iqr_velocita_medio"]
     risultati_seg_ext = calibra_nb2_per_categoria(
         df_seg, "categoria_spf", covariate_estese_seg
     )
-    # Confronta AIC: se il modello esteso migliora, usalo.
     for cat in risultati_seg:
-        r_base = risultati_seg[cat]
         r_ext = risultati_seg_ext.get(cat, {})
-        if r_base.get("converged") and r_ext.get("converged"):
-            aic_base = r_base.get("aic")
-            aic_ext = r_ext.get("aic")
-            if aic_base is not None and aic_ext is not None and aic_ext < aic_base:
-                log.info(
-                    "  '%s': modello esteso migliore (AIC %.1f < %.1f), adottato",
-                    cat,
-                    aic_ext,
-                    aic_base,
-                )
-                risultati_seg[cat] = r_ext
+        if not r_ext.get("converged"):
+            continue
+        # Rifitto il base sullo stesso sample del modello esteso.
+        sub = df_seg.loc[df_seg["categoria_spf"] == cat].dropna(
+            subset=covariate_estese_seg + ["log_n_anni"]
+        )
+        r_base_same = calibra_nb2(sub, covariate_seg, "log_n_anni")
+        if not r_base_same.get("converged"):
+            continue
+        aic_base = r_base_same.get("aic")
+        aic_ext = r_ext.get("aic")
+        if aic_base is not None and aic_ext is not None and aic_ext < aic_base:
+            log.info(
+                "  '%s': modello esteso migliore (AIC %.1f < %.1f su n=%d), adottato",
+                cat, aic_ext, aic_base, r_ext["n_siti"],
+            )
+            risultati_seg[cat] = r_ext
 
     log.info("=== Modelli estesi intersezioni ===")
     covariate_estese_int = ["log_flusso_entrante", "n_bracci"]
@@ -604,19 +709,23 @@ def main(config: dict[str, Any]) -> None:
         df_int, "categoria_spf", covariate_estese_int
     )
     for cat in risultati_int:
-        r_base = risultati_int[cat]
         r_ext = risultati_int_ext.get(cat, {})
-        if r_base.get("converged") and r_ext.get("converged"):
-            aic_base = r_base.get("aic")
-            aic_ext = r_ext.get("aic")
-            if aic_base is not None and aic_ext is not None and aic_ext < aic_base:
-                log.info(
-                    "  '%s': modello esteso migliore (AIC %.1f < %.1f), adottato",
-                    cat,
-                    aic_ext,
-                    aic_base,
-                )
-                risultati_int[cat] = r_ext
+        if not r_ext.get("converged"):
+            continue
+        sub = df_int.loc[df_int["categoria_spf"] == cat].dropna(
+            subset=covariate_estese_int + ["log_n_anni"]
+        )
+        r_base_same = calibra_nb2(sub, covariate_int, "log_n_anni")
+        if not r_base_same.get("converged"):
+            continue
+        aic_base = r_base_same.get("aic")
+        aic_ext = r_ext.get("aic")
+        if aic_base is not None and aic_ext is not None and aic_ext < aic_base:
+            log.info(
+                "  '%s': modello esteso migliore (AIC %.1f < %.1f su n=%d), adottato",
+                cat, aic_ext, aic_base, r_ext["n_siti"],
+            )
+            risultati_int[cat] = r_ext
 
     # --- Applica predizioni ---
     df_seg = applica_predizioni(df_seg, risultati_seg, "categoria_spf")

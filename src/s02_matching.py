@@ -921,6 +921,13 @@ def costruisci_segmenti(
             if "iqr_norm" in sub.columns
             else float("nan")
         )
+        # Dispersione velocita' pura (V75-V25 in km/h), indipendente dal
+        # limite di velocita' (i limiti non sono sempre aggiornati).
+        iqr_kmh_medio = (
+            _media_pesata(sub["iqr_velocita"].to_numpy(dtype=float), pesi)
+            if "iqr_velocita" in sub.columns
+            else float("nan")
+        )
 
         toponimo_visualizzato = _moda_categoriale(sub["toponimo"]) if "toponimo" in sub.columns else None
         classe_frc = _moda_categoriale(sub["classe_frc"]) if "classe_frc" in sub.columns else None
@@ -972,6 +979,7 @@ def costruisci_segmenti(
                 "limite_velocita_medio": limite_medio,
                 "eccesso_v85_medio": eccesso_medio,
                 "iqr_norm_medio": iqr_medio,
+                "iqr_velocita_medio": iqr_kmh_medio,
                 "classe_frc": classe_frc,
                 "pgtu_classifica": pgtu_classifica,
                 "pgtu_tpl": pgtu_tpl,
