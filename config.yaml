@@ -105,6 +105,11 @@ matching:
   # Raggio (metri) per il clustering di prossimita' delle intersezioni.
   # Nodi entro questa distanza con almeno un toponimo in comune vengono fusi.
   raggio_cluster_intersezioni: 30
+  # Raggio (metri) del buffer attorno a ciascun nodo-intersezione usato
+  # per raccogliere i toponimi degli archi TomTom limitrofi. Permette di
+  # catturare il nome della piazza/largo anche quando i suoi archi non
+  # convergono esattamente al nodo (es. perimetro di una piazza).
+  raggio_toponimi_intersezione: 20
   # Variazione massima del TGM tra archetti consecutivi per appartenere
   # allo stesso segmento omogeneo.
   soglia_variazione_tgm_segmento: 0.30
@@ -173,9 +178,10 @@ indice_composito:
   # Percentili usati per la normalizzazione robusta delle componenti.
   percentile_min: 1
   percentile_max: 99
-  # Se la % di zeri in una componente supera questa soglia, usa la
-  # normalizzazione zero-inflated: zero -> 0, positivi -> [1, 100].
-  soglia_zero_pct: 50.0
+  # Metodo di normalizzazione: A usa la P1-P99 lineare (continua),
+  # B/C/D usano sempre la zero-inflated (zero -> 0, positivi -> [1,100])
+  # perche' nei rapporti severita'/vulnerabilita' lo zero ha significato
+  # sostantivo. La scelta e' codificata in assembla_priorita.
 
 classificazione:
   # Soglie percentili per le 5 fasce di priorita' (Task 4.2).

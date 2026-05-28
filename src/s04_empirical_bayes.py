@@ -147,13 +147,26 @@ def arricchisci_con_eb_epdo(
         df[col] = vals
 
     df["EPDO_i"] = calcola_epdo(df, pesi_epdo)
-    n_inc = df["n_incidenti"].astype(float).clip(lower=1e-9)
-    df["peso_medio_epdo"] = df["EPDO_i"] / n_inc
-    df["excess_EPDO_i"] = df["excess_i"] * df["peso_medio_epdo"]
-
     df["costo_sociale_eur"] = calcola_costo_sociale(df, costi_sociali)
-    costo_medio = df["costo_sociale_eur"] / n_inc
-    df["costo_sociale_eccesso_eur"] = df["excess_i"] * costo_medio
+
+    # Per i siti con n_incidenti = 0 il peso medio per incidente non e'
+    # definito (non c'e' una severity mix osservata). Convenzione adottata:
+    # excess_EPDO_i = 0 per questi siti (coerente con la prioritizzazione
+    # operativa: i siti senza incidenti restano in monitoraggio anche se
+    # E_i > 0). Stesso ragionamento per il costo sociale dell'eccesso.
+    n_inc = df["n_incidenti"].astype(float)
+    ha_incidenti = n_inc > 0
+    peso_medio_epdo = pd.Series(0.0, index=df.index)
+    costo_medio = pd.Series(0.0, index=df.index)
+    peso_medio_epdo.loc[ha_incidenti] = (
+        df.loc[ha_incidenti, "EPDO_i"] / n_inc.loc[ha_incidenti]
+    )
+    costo_medio.loc[ha_incidenti] = (
+        df.loc[ha_incidenti, "costo_sociale_eur"] / n_inc.loc[ha_incidenti]
+    )
+    df["peso_medio_epdo"] = peso_medio_epdo
+    df["excess_EPDO_i"] = df["excess_i"].fillna(0.0) * peso_medio_epdo
+    df["costo_sociale_eccesso_eur"] = df["excess_i"].fillna(0.0) * costo_medio
 
     return df
 

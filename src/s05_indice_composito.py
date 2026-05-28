@@ -65,8 +65,16 @@ def calcola_componente_C(df: pd.DataFrame, n_min: int = 5) -> pd.Series:
 def calcola_componente_D_segmenti(df: pd.DataFrame) -> pd.Series:
     """Componente D — dispersione velocita' per segmenti.
 
-    D_i = IQR_norm (dispersione pura, indipendente dai limiti di velocita').
+    D_i = IQR delle velocita' in km/h (V75 - V25), indipendente dai limiti
+    di velocita': i limiti non sono sempre aggiornati nella base dati e
+    introducono distorsioni nei rapporti normalizzati.
     """
+    if "iqr_velocita_medio" in df.columns:
+        return df["iqr_velocita_medio"].fillna(0).astype(float)
+    # Fallback per retro-compatibilita' con dataset gia' generati.
+    log.warning(
+        "Colonna 'iqr_velocita_medio' assente: fallback su 'iqr_norm_medio'"
+    )
     return df["iqr_norm_medio"].fillna(0).astype(float)
 
 
@@ -77,11 +85,20 @@ def calcola_componente_D_intersezioni(
 ) -> pd.Series:
     """Componente D — dispersione velocita' per intersezioni.
 
-    Media pesata per TGM dell'IQR_norm degli archi convergenti.
+    Media pesata per TGM dell'IQR in km/h degli archi convergenti.
+    Indipendente dai limiti di velocita' (vedi ``calcola_componente_D_segmenti``).
     """
-    # D per ciascun arco = IQR_norm (dispersione pura).
-    iqr = gdf_rete.get("iqr_norm", pd.Series(0.0, index=gdf_rete.index)).fillna(0).astype(float)
-    d_arco = iqr
+    # D per ciascun arco = IQR_velocita (V75-V25 in km/h, dispersione pura).
+    if "iqr_velocita" in gdf_rete.columns:
+        d_arco_serie = gdf_rete["iqr_velocita"]
+    else:
+        log.warning(
+            "Colonna 'iqr_velocita' assente in gdf_rete: fallback su 'iqr_norm'"
+        )
+        d_arco_serie = gdf_rete.get(
+            "iqr_norm", pd.Series(0.0, index=gdf_rete.index)
+        )
+    d_arco = d_arco_serie.fillna(0).astype(float)
     tgm_arco = gdf_rete["tgm"].fillna(0).astype(float)
     arco_d = dict(zip(gdf_rete["id_arco"].values, d_arco.values))
     arco_tgm = dict(zip(gdf_rete["id_arco"].values, tgm_arco.values))
@@ -117,24 +134,34 @@ def normalizza_robusta(
     serie: pd.Series,
     p_min: float = 1.0,
     p_max: float = 99.0,
-    soglia_zero_pct: float = 50.0,
+    metodo: str = "standard",
 ) -> pd.Series:
     """Normalizza su scala 0-100 usando percentili robusti.
 
-    Se la percentuale di zeri supera ``soglia_zero_pct``, applica la
-    normalizzazione zero-inflated: i valori nulli restano 0, quelli
-    positivi vengono normalizzati a [1, 100] sulla sotto-distribuzione
-    dei soli valori > 0. Questo evita che componenti con molti zeri
-    (es. severita' sui segmenti, dove <1% ha feriti gravi) collassino
-    tutte a zero.
+    Parametri
+    ---------
+    serie : pd.Series
+        Componente grezza da normalizzare.
+    p_min, p_max : float
+        Percentili usati come estremi (default 1 e 99).
+    metodo : {"standard", "zero_inflated"}
+        - ``"standard"``: normalizzazione lineare ``100·(x-P1)/(P99-P1)``,
+          clippata a [0, 100]. Adatta a componenti continue (es. eccesso EB).
+        - ``"zero_inflated"``: gli zeri restano 0, i positivi vengono
+          normalizzati a [1, 100] sulla sotto-distribuzione dei soli
+          valori > 0. Adatta a componenti dove lo zero ha significato
+          sostantivo (es. severita': "nessun incidente grave"), evitando
+          che la massa di zeri comprima la scala dei positivi.
     """
     vals = serie.dropna()
     if len(vals) == 0:
         return pd.Series(0.0, index=serie.index)
 
-    pct_zero = (vals == 0).sum() / len(vals) * 100.0
-    if pct_zero > soglia_zero_pct:
+    if metodo == "zero_inflated":
         return _normalizza_zero_inflated(serie, p_min, p_max)
+
+    if metodo != "standard":
+        raise ValueError(f"metodo non riconosciuto: {metodo!r}")
 
     lo = np.nanpercentile(serie, p_min)
     hi = np.nanpercentile(serie, p_max)
@@ -247,9 +274,16 @@ def assembla_priorita(
     soglie_percentili: list[float],
     p_min: float,
     p_max: float,
-    soglia_zero_pct: float = 50.0,
 ) -> pd.DataFrame:
-    """Calcola componenti, normalizza, computa ICP e classifica."""
+    """Calcola componenti, normalizza, computa ICP e classifica.
+
+    Scelta del metodo di normalizzazione per componente:
+    - A (eccesso EB pesato): standard P1-P99, componente continua.
+    - B, C, D (severita', vulnerabilita', dispersione velocita'):
+      zero-inflated, perche' lo zero ha significato sostantivo
+      ("nessun incidente grave", "nessun pedone", "dispersione nulla")
+      e una normalizzazione lineare comprime i positivi.
+    """
     df = df.copy()
 
     # Componenti grezze.
@@ -258,11 +292,10 @@ def assembla_priorita(
     df["C"] = calcola_componente_C(df)
     # D deve essere gia' presente nel DataFrame.
 
-    # Normalizzazione robusta (zero-inflated se la componente ha troppi zeri).
-    df["A_norm"] = normalizza_robusta(df["A"], p_min, p_max, soglia_zero_pct)
-    df["B_norm"] = normalizza_robusta(df["B"], p_min, p_max, soglia_zero_pct)
-    df["C_norm"] = normalizza_robusta(df["C"], p_min, p_max, soglia_zero_pct)
-    df["D_norm"] = normalizza_robusta(df["D"], p_min, p_max, soglia_zero_pct)
+    df["A_norm"] = normalizza_robusta(df["A"], p_min, p_max, metodo="standard")
+    df["B_norm"] = normalizza_robusta(df["B"], p_min, p_max, metodo="zero_inflated")
+    df["C_norm"] = normalizza_robusta(df["C"], p_min, p_max, metodo="zero_inflated")
+    df["D_norm"] = normalizza_robusta(df["D"], p_min, p_max, metodo="zero_inflated")
 
     # ICP e classificazione.
     df["ICP"] = calcola_icp(df, pesi)
@@ -335,8 +368,13 @@ def main(config: dict[str, Any]) -> None:
     pesi = config["indice_composito"]["pesi"]
     p_min = float(config["indice_composito"]["percentile_min"])
     p_max = float(config["indice_composito"]["percentile_max"])
-    soglia_zero = float(config["indice_composito"].get("soglia_zero_pct", 50.0))
     soglie = [float(s) for s in config["classificazione"]["soglie_percentili"]]
+
+    # Validazione: pesi devono sommare a 1.
+    somma_pesi = sum(float(v) for v in pesi.values())
+    if abs(somma_pesi - 1.0) > 1e-6:
+        log.warning("I pesi ICP non sommano a 1.0 (somma=%.4f). Normalizzo.", somma_pesi)
+        pesi = {k: float(v) / somma_pesi for k, v in pesi.items()}
 
     # Componente D.
     log.info("Calcolo componente D (rischio velocita')...")
@@ -345,9 +383,9 @@ def main(config: dict[str, Any]) -> None:
 
     # Assemblaggio.
     log.info("Assemblaggio indice composito segmenti...")
-    df_seg = assembla_priorita(df_seg, "segmento", pesi, soglie, p_min, p_max, soglia_zero)
+    df_seg = assembla_priorita(df_seg, "segmento", pesi, soglie, p_min, p_max)
     log.info("Assemblaggio indice composito intersezioni...")
-    df_int = assembla_priorita(df_int, "intersezione", pesi, soglie, p_min, p_max, soglia_zero)
+    df_int = assembla_priorita(df_int, "intersezione", pesi, soglie, p_min, p_max)
 
     # Riassunto.
     for nome, df in (("segmenti", df_seg), ("intersezioni", df_int)):
