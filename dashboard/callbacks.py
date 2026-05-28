@@ -58,7 +58,8 @@ def _ricalcola_icp_fasce(df: pd.DataFrame, pesi: dict) -> pd.DataFrame:
     tot = sum(pesi.values()) or 1
     wA, wB, wC, wD = pesi["A"] / tot, pesi["B"] / tot, pesi["C"] / tot, pesi["D"] / tot
     out = df.copy()
-    out["ICP"] = wA * df["A_norm"] + wB * df["B_norm"] + wC * df["C_norm"] + wD * df["D_norm"]
+    out["ICP"] = (wA * df["A_norm"].fillna(0) + wB * df["B_norm"].fillna(0)
+                  + wC * df["C_norm"].fillna(0) + wD * df["D_norm"].fillna(0))
     soglie = [np.nanpercentile(out["ICP"], p) for p in [20, 40, 60, 80]]
     condizioni = [out["ICP"] <= soglie[0], out["ICP"] <= soglie[1],
                   out["ICP"] <= soglie[2], out["ICP"] <= soglie[3]]
@@ -147,10 +148,13 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
 
             inter = sub[sub["tipo_sito"] == "intersezione"] if "intersezione" in (tipi or []) else sub.iloc[:0]
             if not inter.empty:
+                topo_int = inter["toponimo"].where(inter["toponimo"].astype(str).str.strip() != "", other=
+                    inter.get("id_nodo", pd.Series("", index=inter.index)).apply(
+                        lambda x: f"Intersezione #{int(x)}" if pd.notna(x) else "Intersezione"))
                 hover = [
-                    f"<b>Int. #{int(nid)}</b><br>ICP: {icp:.1f} | {f}<br>Inc: {int(n)}"
-                    for nid, icp, f, n in zip(
-                        inter.get("id_nodo", pd.Series(0, index=inter.index)),
+                    f"<b>{t}</b><br>ICP: {icp:.1f} | {f}<br>Inc: {int(n)}"
+                    for t, icp, f, n in zip(
+                        topo_int,
                         inter["ICP"], inter["fascia_priorita"],
                         inter.get("n_incidenti", pd.Series(0, index=inter.index)))
                 ]
@@ -232,7 +236,11 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         try:
             fascia = sito.get("fascia_priorita", "")
             colore = COLORI_FASCE.get(fascia, _TESTO)
-            nome = sito.get("toponimo") or f"Intersezione #{sito.get('id_nodo','')}"
+            nome_raw = sito.get("toponimo", "")
+            nome = nome_raw if isinstance(nome_raw, str) and nome_raw.strip() else (
+                f"Intersezione #{sito.get('id_nodo', '')}" if sito.get("tipo_sito") == "intersezione"
+                else str(sito.get("id_segmento", "Sito")))
+
             icp = sito.get("ICP", 0)
             tipo = sito.get("tipo_sito", "")
 
@@ -471,8 +479,7 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                 yaxis=dict(title="Peso EB (w_i)", gridcolor=_GRIGLIA,
                            range=[0, 1.05]))
 
-            col_id = "id_segmento" if tipo == "segmento" else "id_nodo"
-            col_nome = "toponimo" if tipo == "segmento" else col_id
+            col_nome = "toponimo"
             cols_show = [col_nome, "n_incidenti", "E_i", "EB_i", "excess_i",
                          "excess_EPDO_i", "costo_sociale_eccesso_eur"]
             cols_show = [c for c in cols_show if c in sub.columns]
@@ -674,9 +681,7 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                         "ICP", "A_norm", "B_norm",
                         "C_norm", "D_norm", "n_incidenti", "excess_EPDO_i",
                         "costo_sociale_eccesso_eur"]
-            top_seg = sub[sub["tipo_sito"] == "segmento"].nlargest(20, "ICP")
-            top_int = sub[sub["tipo_sito"] == "intersezione"].nlargest(20, "ICP")
-            top_combined = pd.concat([top_seg, top_int]).sort_values("ICP", ascending=False)
+            top_combined = sub.nlargest(50, "ICP").copy()
             top_combined.insert(0, "rank", range(1, len(top_combined) + 1))
             cols_tab = [c for c in cols_tab if c in top_combined.columns]
             top_combined = top_combined[cols_tab].round(2)

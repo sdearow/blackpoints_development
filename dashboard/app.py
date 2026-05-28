@@ -66,6 +66,12 @@ def _carica_dati(gpkg_path: Path) -> pd.DataFrame:
     df_int = pd.DataFrame(gdf_int.drop(columns="geometry"))
 
     df = pd.concat([df_seg, df_int], ignore_index=True)
+
+    if "toponimo" in df.columns:
+        df["toponimo"] = df["toponimo"].fillna("")
+    else:
+        df["toponimo"] = ""
+
     log.info("Dati caricati: %d record totali", len(df))
     return df
 
