@@ -179,7 +179,7 @@ def prepara_dataset_intersezioni(
         somma = sum(tgm_arco.get(a, 0.0) for a in ids)
         flussi.append(somma / 2.0)
 
-    cols_int = ["id_nodo", "n_archi", "is_semaforizzata"]
+    cols_int = ["id_nodo", "n_archi", "is_semaforizzata", "toponimo"]
     cols_int = [c for c in cols_int if c in gdf_intersezioni.columns]
     df = gdf_intersezioni[cols_int].copy()
     df = df.set_index("id_nodo")

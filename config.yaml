@@ -105,6 +105,11 @@ matching:
   # Raggio (metri) per il clustering di prossimita' delle intersezioni.
   # Nodi entro questa distanza con almeno un toponimo in comune vengono fusi.
   raggio_cluster_intersezioni: 30
+  # Raggio (metri) del buffer attorno a ciascun nodo-intersezione usato
+  # per raccogliere i toponimi degli archi TomTom limitrofi. Permette di
+  # catturare il nome della piazza/largo anche quando i suoi archi non
+  # convergono esattamente al nodo (es. perimetro di una piazza).
+  raggio_toponimi_intersezione: 20
   # Variazione massima del TGM tra archetti consecutivi per appartenere
   # allo stesso segmento omogeneo.
   soglia_variazione_tgm_segmento: 0.30

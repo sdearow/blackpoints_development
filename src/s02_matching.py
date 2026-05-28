@@ -22,6 +22,7 @@ lavoro (``EPSG:32633``), coerentemente con l'output di s01.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -198,11 +199,129 @@ def costruisci_nodi(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Etichettatura toponomastica delle intersezioni
+# ---------------------------------------------------------------------------
+
+# Pattern dei toponimi "di piazza": vanno in testa al label di un'intersezione
+# perche' identificano lo slargo/spazio nodale piuttosto che le strade afferenti.
+_PRIORITA_TOPO_PATTERN = re.compile(
+    r"^\s*(piazza|p\.zza|p\.za|piazzale|p\.le|largo|l\.go|slargo|rotonda|belvedere|piazzetta)\b",
+    re.IGNORECASE,
+)
+
+
+def _ordina_toponimi_intersezione(toponimi: list[str]) -> list[str]:
+    """Ordina i toponimi mettendo piazza/largo/piazzale/ecc. davanti.
+
+    All'interno di ciascun gruppo (priorita' o ordinari) i toponimi sono
+    ordinati alfabeticamente per riproducibilita'.
+    """
+    visti: set[str] = set()
+    distinti: list[str] = []
+    for t in toponimi:
+        if not isinstance(t, str):
+            continue
+        chiave = t.strip()
+        if not chiave or chiave.lower() in visti:
+            continue
+        visti.add(chiave.lower())
+        distinti.append(chiave)
+    chiave_ord = lambda s: s.lower()  # noqa: E731
+    priori = sorted(
+        (t for t in distinti if _PRIORITA_TOPO_PATTERN.match(t)),
+        key=chiave_ord,
+    )
+    altri = sorted(
+        (t for t in distinti if not _PRIORITA_TOPO_PATTERN.match(t)),
+        key=chiave_ord,
+    )
+    return priori + altri
+
+
+def _calcola_toponimi_intersezioni_buffer(
+    gdf_intersezioni: gpd.GeoDataFrame,
+    gdf_rete: gpd.GeoDataFrame,
+    raggio_m: float,
+) -> pd.Series:
+    """Per ogni intersezione, restituisce la lista ordinata di toponimi degli
+    archi TomTom che intersecano un buffer di ``raggio_m`` metri attorno
+    al nodo. I toponimi sono ordinati con piazza/largo/ecc. in testa.
+    """
+    if "toponimo" not in gdf_rete.columns or len(gdf_intersezioni) == 0:
+        return pd.Series(
+            [[] for _ in range(len(gdf_intersezioni))],
+            index=gdf_intersezioni.index,
+        )
+
+    # Buffer poligonali attorno ai nodi.
+    geom_buffer = gdf_intersezioni.geometry.buffer(float(raggio_m))
+    buffers = gpd.GeoDataFrame(
+        {"id_nodo": gdf_intersezioni["id_nodo"].values},
+        geometry=geom_buffer.values,
+        crs=gdf_intersezioni.crs,
+    )
+
+    rete_subset = gdf_rete[["toponimo", "geometry"]].copy()
+    # Spatial join: archi che intersecano i buffer.
+    joined = gpd.sjoin(
+        rete_subset, buffers, how="inner", predicate="intersects"
+    )
+
+    if len(joined) == 0:
+        return pd.Series(
+            [[] for _ in range(len(gdf_intersezioni))],
+            index=gdf_intersezioni.index,
+        )
+
+    # Per ogni nodo, raccogli i toponimi distinti ordinati con priorita'.
+    toponimi_per_nodo = (
+        joined.dropna(subset=["toponimo"])
+        .groupby("id_nodo")["toponimo"]
+        .apply(lambda s: _ordina_toponimi_intersezione(list(s)))
+    )
+
+    return gdf_intersezioni["id_nodo"].map(toponimi_per_nodo).apply(
+        lambda v: v if isinstance(v, list) else []
+    )
+
+
+def _label_intersezione(toponimi: list[str], max_componenti: int = 3) -> str | None:
+    """Costruisce un'etichetta testuale per l'intersezione a partire dalla
+    lista (ordinata) di toponimi: i primi ``max_componenti`` uniti da ' / '.
+    """
+    if not toponimi:
+        return None
+    return " / ".join(toponimi[:max_componenti])
+
+
+def arricchisci_toponimi_intersezioni(
+    gdf_intersezioni: gpd.GeoDataFrame,
+    gdf_rete: gpd.GeoDataFrame,
+    raggio_m: float = 20.0,
+    max_componenti_label: int = 3,
+) -> gpd.GeoDataFrame:
+    """Aggiunge ``toponimi_buffer`` (lista) e ``toponimo`` (label) alle
+    intersezioni, derivati dagli archi TomTom che intersecano un buffer
+    attorno al nodo. I toponimi tipo Piazza/Largo/ecc. vengono in testa.
+    """
+    gdf = gdf_intersezioni.copy()
+    toponimi_buffer = _calcola_toponimi_intersezioni_buffer(
+        gdf, gdf_rete, raggio_m
+    )
+    gdf["toponimi_buffer"] = toponimi_buffer
+    gdf["toponimo"] = toponimi_buffer.apply(
+        lambda lst: _label_intersezione(lst, max_componenti=max_componenti_label)
+    )
+    return gdf
+
+
 def estrai_intersezioni(
     gdf_rete: gpd.GeoDataFrame,
     tolleranza_m: float = 0.5,
     filtra_falsi_incroci: bool = True,
     raggio_cluster_intersezioni_m: float = 30.0,
+    raggio_toponimi_m: float = 20.0,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
     """Estrae i nodi-intersezione della rete TomTom.
 
@@ -293,6 +412,18 @@ def estrai_intersezioni(
             gdf_intersezioni, gdf_rete,
             raggio_cluster_m=raggio_cluster_intersezioni_m,
         )
+
+    # Etichettatura toponomastica: usa un buffer attorno al nodo per
+    # catturare anche gli archi di una piazza/largo che non condividono
+    # endpoint con tutte le strade afferenti.
+    gdf_intersezioni = arricchisci_toponimi_intersezioni(
+        gdf_intersezioni, gdf_rete, raggio_m=raggio_toponimi_m,
+    )
+    n_etichettati = int(gdf_intersezioni["toponimo"].notna().sum())
+    log.info(
+        "Etichettate %d/%d intersezioni con toponimo (buffer = %.1f m)",
+        n_etichettati, len(gdf_intersezioni), raggio_toponimi_m,
+    )
 
     return gdf_intersezioni, df_archi_nodi
 
@@ -585,7 +716,7 @@ def salva_intersezioni(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
         percorso.unlink()
 
     gdf_out = gdf.copy()
-    for col in ("archi", "toponimi", "id_impianti"):
+    for col in ("archi", "toponimi", "toponimi_buffer", "id_impianti"):
         if col in gdf_out.columns:
             gdf_out[col] = gdf_out[col].apply(
                 lambda lst: "|".join(str(x) for x in lst) if isinstance(lst, list) else ""
@@ -1410,11 +1541,15 @@ def main(config: dict[str, Any]) -> None:
     raggio_cluster_int = float(
         config.get("matching", {}).get("raggio_cluster_intersezioni", 30.0)
     )
+    raggio_topo_int = float(
+        config.get("matching", {}).get("raggio_toponimi_intersezione", 20.0)
+    )
     gdf_intersezioni, df_archi_nodi = estrai_intersezioni(
         gdf_rete,
         tolleranza_m=tolleranza_nodo,
         filtra_falsi_incroci=filtra_incroci,
         raggio_cluster_intersezioni_m=raggio_cluster_int,
+        raggio_toponimi_m=raggio_topo_int,
     )
 
     # Per la segmentazione servono anche tutti i nodi (non solo le
