@@ -90,6 +90,7 @@ def prepara_dataset_segmenti(
         "limite_velocita_medio",
         "eccesso_v85_medio",
         "iqr_norm_medio",
+        "iqr_velocita_medio",
         "classe_frc",
         "pgtu_classifica",
         "grande_viabilita",
