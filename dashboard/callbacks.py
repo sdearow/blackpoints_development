@@ -112,71 +112,138 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Input("filtro-fascia", "value"),
         Input("slider-top-n", "value"),
         Input("pesi-correnti", "data"),
+        Input("filtro-intersezioni", "value"),
+        Input("filtro-metrica", "value"),
     )
-    def aggiorna_mappa(tipi, fasce, top_n, pesi):
+    def aggiorna_mappa(tipi, fasce, top_n, pesi, filtro_int, metrica):
         try:
             df_w = _ricalcola_icp_fasce(df, pesi) if pesi else df
-            mask = df_w["tipo_sito"].isin(tipi or []) & df_w["fascia_priorita"].isin(fasce or [])
-            sub = df_w.loc[mask].nlargest(top_n, "ICP")
-            fig = go.Figure()
 
+            mask = df_w["tipo_sito"].isin(tipi or []) & df_w["fascia_priorita"].isin(fasce or [])
+
+            if filtro_int and filtro_int != "tutte" and "intersezione" in (tipi or []):
+                is_sem = filtro_int == "semaforizzata"
+                mask = mask & (
+                    (df_w["tipo_sito"] != "intersezione")
+                    | (df_w["is_semaforizzata"].fillna(False) == is_sem)
+                )
+
+            metrica_col = metrica if metrica in df_w.columns else "ICP"
+            sub = df_w.loc[mask].nlargest(top_n, metrica_col)
+
+            fig = go.Figure()
+            fasce_con_legenda = set()
+
+            # --- Segments as lines ---
             seg = sub[sub["tipo_sito"] == "segmento"] if "segmento" in (tipi or []) else sub.iloc[:0]
-            if not seg.empty:
-                hover = [
-                    f"<b>{t}</b><br>ICP: {icp:.1f} | {f}<br>Inc: {int(n)}"
-                    for t, icp, f, n in zip(
-                        seg.get("toponimo", pd.Series("", index=seg.index)),
-                        seg["ICP"], seg["fascia_priorita"],
-                        seg.get("n_incidenti", pd.Series(0, index=seg.index)))
+            has_coords = "geom_coords" in seg.columns if not seg.empty else False
+
+            if not seg.empty and has_coords:
+                for fascia in ORDINE_FASCE:
+                    seg_f = seg[seg["fascia_priorita"] == fascia]
+                    if seg_f.empty:
+                        continue
+                    lats, lons = [], []
+                    for coords in seg_f["geom_coords"]:
+                        if not isinstance(coords, list) or not coords:
+                            continue
+                        for c in coords:
+                            lons.append(c[0])
+                            lats.append(c[1])
+                        lons.append(None)
+                        lats.append(None)
+
+                    if lats:
+                        fasce_con_legenda.add(fascia)
+                        fig.add_trace(_ScatterMap(
+                            lat=lats, lon=lons,
+                            mode="lines",
+                            line=dict(color=COLORI_FASCE[fascia], width=3),
+                            name=fascia.capitalize(),
+                            legendgroup=fascia,
+                            hoverinfo="skip",
+                        ))
+
+                hover_seg = [
+                    f"<b>{t}</b><br>{metrica_col}: {mv:.1f} | {f}"
+                    f"<br>Inc: {int(n)} | ICP: {icp:.1f}"
+                    for t, mv, f, n, icp in zip(
+                        seg["toponimo"],
+                        seg[metrica_col],
+                        seg["fascia_priorita"],
+                        seg.get("n_incidenti", pd.Series(0, index=seg.index)),
+                        seg["ICP"])
                 ]
                 fig.add_trace(_ScatterMap(
                     lat=seg["lat"].values, lon=seg["lon"].values,
                     mode="markers",
-                    marker=dict(
-                        size=7, opacity=0.85,
-                        color=seg["ICP"].values,
-                        colorscale=[[0, "#f9e2af"], [0.5, "#e67e22"], [1, "#8b0000"]],
-                        cmin=float(sub["ICP"].min()) if len(sub) > 0 else 0,
-                        cmax=float(sub["ICP"].max()) if len(sub) > 0 else 1,
-                        colorbar=dict(title=dict(text="ICP",
-                                                 font=dict(color=_TESTO, size=10)),
-                                      len=0.5, y=0.3,
-                                      tickfont=dict(color=_TESTO, size=9)),
-                    ),
-                    text=hover, hoverinfo="text",
-                    name="Segmenti", customdata=seg.index.tolist(),
+                    marker=dict(size=3, opacity=0.01,
+                                color=[COLORI_FASCE.get(f, _TESTO)
+                                       for f in seg["fascia_priorita"]]),
+                    text=hover_seg, hoverinfo="text",
+                    showlegend=False,
+                    customdata=seg.index.tolist(),
+                    name="",
                 ))
+            elif not seg.empty:
+                for fascia in ORDINE_FASCE:
+                    seg_f = seg[seg["fascia_priorita"] == fascia]
+                    if seg_f.empty:
+                        continue
+                    fasce_con_legenda.add(fascia)
+                    hover = [
+                        f"<b>{t}</b><br>{metrica_col}: {mv:.1f} | {f}"
+                        f"<br>Inc: {int(n)}"
+                        for t, mv, f, n in zip(
+                            seg_f["toponimo"], seg_f[metrica_col],
+                            seg_f["fascia_priorita"],
+                            seg_f.get("n_incidenti", pd.Series(0, index=seg_f.index)))
+                    ]
+                    fig.add_trace(_ScatterMap(
+                        lat=seg_f["lat"].values, lon=seg_f["lon"].values,
+                        mode="markers",
+                        marker=dict(size=7, opacity=0.85,
+                                    color=COLORI_FASCE[fascia]),
+                        text=hover, hoverinfo="text",
+                        name=fascia.capitalize(),
+                        legendgroup=fascia,
+                        customdata=seg_f.index.tolist(),
+                    ))
 
+            # --- Intersections as points ---
             inter = sub[sub["tipo_sito"] == "intersezione"] if "intersezione" in (tipi or []) else sub.iloc[:0]
             if not inter.empty:
-                topo_int = inter["toponimo"].where(inter["toponimo"].astype(str).str.strip() != "", other=
-                    inter.get("id_nodo", pd.Series("", index=inter.index)).apply(
-                        lambda x: f"Intersezione #{int(x)}" if pd.notna(x) else "Intersezione"))
-                hover = [
-                    f"<b>{t}</b><br>ICP: {icp:.1f} | {f}<br>Inc: {int(n)}"
-                    for t, icp, f, n in zip(
-                        topo_int,
-                        inter["ICP"], inter["fascia_priorita"],
-                        inter.get("n_incidenti", pd.Series(0, index=inter.index)))
-                ]
-                fig.add_trace(_ScatterMap(
-                    lat=inter["lat"].values, lon=inter["lon"].values,
-                    mode="markers",
-                    marker=dict(
-                        size=9, opacity=0.9,
-                        color=inter["ICP"].values,
-                        colorscale=[[0, "#f9e2af"], [0.5, "#e67e22"], [1, "#8b0000"]],
-                        cmin=float(sub["ICP"].min()) if len(sub) > 0 else 0,
-                        cmax=float(sub["ICP"].max()) if len(sub) > 0 else 1,
-                        showscale=seg.empty,
-                        colorbar=dict(title=dict(text="ICP",
-                                                 font=dict(color=_TESTO, size=10)),
-                                      len=0.5, y=0.3,
-                                      tickfont=dict(color=_TESTO, size=9)),
-                    ),
-                    text=hover, hoverinfo="text",
-                    name="Intersezioni", customdata=inter.index.tolist(),
-                ))
+                topo_int = inter["toponimo"].where(
+                    inter["toponimo"].astype(str).str.strip() != "",
+                    other=inter.get("id_nodo", pd.Series("", index=inter.index)).apply(
+                        lambda x: f"Int. #{int(x)}" if pd.notna(x) else "Intersezione"))
+                for fascia in ORDINE_FASCE:
+                    int_f = inter[inter["fascia_priorita"] == fascia]
+                    if int_f.empty:
+                        continue
+                    show_leg = fascia not in fasce_con_legenda
+                    fasce_con_legenda.add(fascia)
+                    hover = [
+                        f"<b>{t}</b><br>{metrica_col}: {mv:.1f} | {f}"
+                        f"<br>Inc: {int(n)} | ICP: {icp:.1f}"
+                        for t, mv, f, n, icp in zip(
+                            topo_int.loc[int_f.index],
+                            int_f[metrica_col],
+                            int_f["fascia_priorita"],
+                            int_f.get("n_incidenti", pd.Series(0, index=int_f.index)),
+                            int_f["ICP"])
+                    ]
+                    fig.add_trace(_ScatterMap(
+                        lat=int_f["lat"].values, lon=int_f["lon"].values,
+                        mode="markers",
+                        marker=dict(size=9, opacity=0.9,
+                                    color=COLORI_FASCE[fascia]),
+                        text=hover, hoverinfo="text",
+                        name=fascia.capitalize(),
+                        legendgroup=fascia,
+                        showlegend=show_leg,
+                        customdata=int_f.index.tolist(),
+                    ))
 
             layout_map = {
                 _MAP_KEY: dict(

@@ -84,6 +84,23 @@ def _pannello_filtri() -> html.Div:
             ),
             html.Div(
                 [
+                    html.P("Intersezioni", style=STILE_TITOLO_CARD),
+                    dcc.RadioItems(
+                        id="filtro-intersezioni",
+                        options=[
+                            {"label": " Tutte", "value": "tutte"},
+                            {"label": " Semaforizzate", "value": "semaforizzata"},
+                            {"label": " Non semaforizzate", "value": "non_semaforizzata"},
+                        ],
+                        value="tutte",
+                        labelStyle={"display": "block", "color": "#cdd6f4", "fontSize": "13px"},
+                        inputStyle={"marginRight": "6px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
                     html.P("Fascia priorita'", style=STILE_TITOLO_CARD),
                     dcc.Checklist(
                         id="filtro-fascia",
@@ -97,7 +114,24 @@ def _pannello_filtri() -> html.Div:
             ),
             html.Div(
                 [
-                    html.P("Mostra top N per ICP", style=STILE_TITOLO_CARD),
+                    html.P("Ordina per", style=STILE_TITOLO_CARD),
+                    dcc.RadioItems(
+                        id="filtro-metrica",
+                        options=[
+                            {"label": " ICP", "value": "ICP"},
+                            {"label": " N. incidenti", "value": "n_incidenti"},
+                            {"label": " Eccesso EPDO", "value": "excess_EPDO_i"},
+                        ],
+                        value="ICP",
+                        labelStyle={"display": "block", "color": "#cdd6f4", "fontSize": "13px"},
+                        inputStyle={"marginRight": "6px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Mostra top N", style=STILE_TITOLO_CARD),
                     dcc.Slider(
                         id="slider-top-n",
                         min=50,
