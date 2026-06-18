@@ -53,19 +53,61 @@ def _msg_placeholder(testo: str) -> Any:
                                 "fontSize": "14px"})
 
 
+def _icp_da_pesi(d: pd.DataFrame, pesi: dict) -> pd.Series:
+    """Calcola la serie ICP da pesi (non normalizzati) e componenti A..D."""
+    tot = sum(pesi.values()) or 1
+    wA, wB, wC, wD = (pesi["A"] / tot, pesi["B"] / tot,
+                      pesi["C"] / tot, pesi["D"] / tot)
+    return (wA * d["A_norm"].fillna(0) + wB * d["B_norm"].fillna(0)
+            + wC * d["C_norm"].fillna(0) + wD * d["D_norm"].fillna(0))
+
+
 def _ricalcola_icp_fasce(df: pd.DataFrame, pesi: dict) -> pd.DataFrame:
     """Ricalcola ICP e fasce con pesi custom, restituendo una copia."""
-    tot = sum(pesi.values()) or 1
-    wA, wB, wC, wD = pesi["A"] / tot, pesi["B"] / tot, pesi["C"] / tot, pesi["D"] / tot
     out = df.copy()
-    out["ICP"] = (wA * df["A_norm"].fillna(0) + wB * df["B_norm"].fillna(0)
-                  + wC * df["C_norm"].fillna(0) + wD * df["D_norm"].fillna(0))
+    out["ICP"] = _icp_da_pesi(df, pesi)
     soglie = [np.nanpercentile(out["ICP"], p) for p in [20, 40, 60, 80]]
     condizioni = [out["ICP"] <= soglie[0], out["ICP"] <= soglie[1],
                   out["ICP"] <= soglie[2], out["ICP"] <= soglie[3]]
     nomi = ["monitoraggio", "bassa", "media", "alta", "altissima"]
     out["fascia_priorita"] = np.select(condizioni, nomi[:4], default="altissima")
     return out
+
+
+# Pesi di default: l'ICP coincide con la componente A (Eccesso EB-EPDO).
+_PESI_DEFAULT = {"A": 1.0, "B": 0.0, "C": 0.0, "D": 0.0}
+
+
+def _tabella_ranking(d: pd.DataFrame, icp: pd.Series, n: int = 25) -> Any:
+    """Costruisce una DataTable col ranking top-N per ICP dato."""
+    dd = d.copy()
+    dd["ICP"] = icp.loc[dd.index].values
+    dd = dd.nlargest(n, "ICP")
+    dd.insert(0, "Pos.", range(1, len(dd) + 1))
+    rinomina = {
+        "Pos.": "Pos.",
+        "toponimo": "Sito",
+        "ICP": "ICP",
+        "n_incidenti": "Inc.",
+        "excess_EPDO_i": "Ecc. EPDO",
+    }
+    cols = [c for c in ["Pos.", "toponimo", "ICP", "n_incidenti",
+                        "excess_EPDO_i"] if c in dd.columns]
+    dd = dd[cols].round(2)
+    if dd.empty:
+        return _msg_placeholder("Nessun sito per i filtri selezionati.")
+    return dash_table.DataTable(
+        data=dd.to_dict("records"),
+        columns=[{"name": rinomina.get(c, c), "id": c} for c in cols],
+        page_size=15,
+        sort_action="native",
+        style_header={"backgroundColor": "#313244", "color": _TESTO,
+                      "fontWeight": "600", "fontSize": "11px", "border": "none"},
+        style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
+                    "fontSize": "11px", "border": f"1px solid {_GRIGLIA}",
+                    "padding": "4px 8px", "maxWidth": "220px",
+                    "overflow": "hidden", "textOverflow": "ellipsis"},
+    )
 
 
 def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
@@ -562,112 +604,102 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             return v, v, v, [], []
 
     # ==================================================================
-    # Callback 8: Tab Sensitivita'
+    # Callback 8a: Tab Sensitivita' — opzioni dropdown categoria segmenti
+    # ==================================================================
+    @app.callback(
+        Output("sens-filtro-categoria", "options"),
+        Input("tabs-principale", "value"),
+    )
+    def aggiorna_cat_sens(tab):
+        col = "spf_categoria" if "spf_categoria" in df.columns else "categoria_spf"
+        seg = df[df["tipo_sito"] == "segmento"]
+        cats = sorted(seg[col].dropna().unique())
+        return [{"label": c, "value": c} for c in cats]
+
+    # ==================================================================
+    # Callback 8b: Tab Sensitivita' — ranking default vs pesi custom
     # ==================================================================
     @app.callback(
         Output("pesi-normalizzati", "children"),
-        Output("sens-rho", "children"),
-        Output("sens-confronto-top", "children"),
-        Output("sens-hist-icp", "figure"),
-        Output("sens-scatter-icp", "figure"),
+        Output("sens-rho-seg", "children"),
+        Output("sens-rho-int", "children"),
+        Output("sens-rank-seg-default", "children"),
+        Output("sens-rank-int-default", "children"),
+        Output("sens-rank-seg-nuovo", "children"),
+        Output("sens-rank-int-nuovo", "children"),
         Input("peso-A", "value"),
         Input("peso-B", "value"),
         Input("peso-C", "value"),
         Input("peso-D", "value"),
+        Input("sens-filtro-categoria", "value"),
+        Input("sens-filtro-int", "value"),
     )
-    def aggiorna_sensitivita(pA, pB, pC, pD):
+    def aggiorna_sensitivita(pA, pB, pC, pD, categorie, tipo_int):
         try:
-            tot = (pA or 0) + (pB or 0) + (pC or 0) + (pD or 0)
-            if tot == 0:
-                tot = 1
-            wA, wB, wC, wD = pA / tot, pB / tot, pC / tot, pD / tot
-            pesi_txt = f"Normalizzati: A={wA:.2f}  B={wB:.2f}  C={wC:.2f}  D={wD:.2f}"
+            pesi = {"A": pA or 0, "B": pB or 0, "C": pC or 0, "D": pD or 0}
+            tot = sum(pesi.values()) or 1
+            wA, wB, wC, wD = (pesi["A"] / tot, pesi["B"] / tot,
+                              pesi["C"] / tot, pesi["D"] / tot)
+            pesi_txt = (f"Normalizzati: A={wA:.2f}  B={wB:.2f}  "
+                        f"C={wC:.2f}  D={wD:.2f}")
 
-            icp_new = (wA * df["A_norm"] + wB * df["B_norm"]
-                       + wC * df["C_norm"] + wD * df["D_norm"])
+            col_cat = ("spf_categoria" if "spf_categoria" in df.columns
+                       else "categoria_spf")
 
-            rank_old = df["ICP"].rank(ascending=False, method="min")
-            rank_new = icp_new.rank(ascending=False, method="min")
+            # Sottoinsiemi filtrati.
+            seg = df[df["tipo_sito"] == "segmento"].copy()
+            if categorie:
+                seg = seg[seg[col_cat].isin(categorie)]
 
-            if sp_stats is not None:
-                validi = rank_old.notna() & rank_new.notna()
-                if validi.sum() > 10:
-                    rho, _ = sp_stats.spearmanr(rank_old[validi], rank_new[validi])
-                else:
-                    rho = float("nan")
-            else:
-                rho = float("nan")
+            inter = df[df["tipo_sito"] == "intersezione"].copy()
+            if tipo_int and tipo_int != "tutte" and "is_semaforizzata" in inter.columns:
+                vuoi_sem = tipo_int == "semaforizzata"
+                inter = inter[inter["is_semaforizzata"].fillna(False) == vuoi_sem]
 
-            rho_txt = f"rho = {rho:.4f}" if np.isfinite(rho) else "N/D (scipy mancante)"
-            rho_color = ("#a6e3a1" if rho > 0.95
-                         else "#f9e2af" if rho > 0.85
-                         else "#f38ba8")
+            # ICP default (solo Eccesso EPDO) e personalizzato.
+            icp_seg_def = _icp_da_pesi(seg, _PESI_DEFAULT)
+            icp_int_def = _icp_da_pesi(inter, _PESI_DEFAULT)
+            icp_seg_new = _icp_da_pesi(seg, pesi)
+            icp_int_new = _icp_da_pesi(inter, pesi)
 
-            top_old = df.nlargest(20, "ICP")[
-                ["tipo_sito", "toponimo", "ICP"]].copy()
-            top_old["rank_default"] = range(1, 21)
-            top_old["ICP_nuovo"] = icp_new.loc[top_old.index].values
-            top_old["rank_nuovo"] = rank_new.loc[top_old.index].astype(int).values
-            top_old = top_old.round(2)
+            # Spearman rho fra ranking default e personalizzato (per tipo).
+            def _rho(icp_def: pd.Series, icp_new: pd.Series) -> float:
+                if sp_stats is None or len(icp_def) < 11:
+                    return float("nan")
+                r_def = icp_def.rank(ascending=False, method="min")
+                r_new = icp_new.rank(ascending=False, method="min")
+                ok = r_def.notna() & r_new.notna()
+                if ok.sum() < 11:
+                    return float("nan")
+                rho, _ = sp_stats.spearmanr(r_def[ok], r_new[ok])
+                return rho
 
-            tab_conf = dash_table.DataTable(
-                data=top_old.to_dict("records"),
-                columns=[{"name": c, "id": c} for c in
-                         ["rank_default", "toponimo", "ICP", "ICP_nuovo",
-                          "rank_nuovo"]],
-                page_size=20,
-                style_header={"backgroundColor": "#313244", "color": _TESTO,
-                              "fontWeight": "600", "fontSize": "11px",
-                              "border": "none"},
-                style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
-                            "fontSize": "11px",
-                            "border": f"1px solid {_GRIGLIA}",
-                            "padding": "4px 8px", "maxWidth": "200px",
-                            "overflow": "hidden", "textOverflow": "ellipsis"},
+            def _rho_span(label: str, rho: float) -> Any:
+                if not np.isfinite(rho):
+                    return html.Span(f"{label}: N/D",
+                                     style={"color": "#6c7086"})
+                colore = ("#a6e3a1" if rho > 0.95
+                          else "#f9e2af" if rho > 0.85 else "#f38ba8")
+                return html.Span(f"{label}: {rho:.3f}",
+                                 style={"color": colore})
+
+            rho_seg = _rho(icp_seg_def, icp_seg_new)
+            rho_int = _rho(icp_int_def, icp_int_new)
+
+            return (
+                pesi_txt,
+                _rho_span("Segmenti", rho_seg),
+                _rho_span("Intersezioni", rho_int),
+                _tabella_ranking(seg, icp_seg_def),
+                _tabella_ranking(inter, icp_int_def),
+                _tabella_ranking(seg, icp_seg_new),
+                _tabella_ranking(inter, icp_int_new),
             )
-
-            fig_hist = go.Figure()
-            fig_hist.add_trace(go.Histogram(
-                x=icp_new, nbinsx=60, marker_color="#cba6f7", opacity=0.7,
-                name="ICP nuovo"))
-            fig_hist.add_trace(go.Histogram(
-                x=df["ICP"], nbinsx=60, marker_color="#89b4fa", opacity=0.4,
-                name="ICP default"))
-            fig_hist.update_layout(
-                **_LAYOUT_BASE, barmode="overlay",
-                xaxis=dict(title="ICP", gridcolor=_GRIGLIA),
-                yaxis=dict(title="Frequenza", gridcolor=_GRIGLIA),
-                legend=dict(bgcolor=_SFONDO,
-                            font=dict(size=10, color=_TESTO)))
-
-            top500 = df.nlargest(500, "ICP").index
-            fig_sc = go.Figure()
-            fig_sc.add_trace(go.Scatter(
-                x=df.loc[top500, "ICP"].values,
-                y=icp_new.loc[top500].values,
-                mode="markers",
-                marker=dict(size=4, color="#f9e2af", opacity=0.6),
-                hoverinfo="x+y"))
-            xy_max = max(df.loc[top500, "ICP"].max(),
-                         icp_new.loc[top500].max()) * 1.05
-            fig_sc.add_trace(go.Scatter(
-                x=[0, xy_max], y=[0, xy_max], mode="lines",
-                line=dict(color="#6c7086", dash="dash", width=1),
-                showlegend=False))
-            fig_sc.update_layout(
-                **_LAYOUT_BASE,
-                xaxis=dict(title="ICP default", gridcolor=_GRIGLIA),
-                yaxis=dict(title="ICP nuovi pesi", gridcolor=_GRIGLIA))
-
-            rho_div = html.Span(rho_txt, style={"color": rho_color})
-            return pesi_txt, rho_div, tab_conf, fig_hist, fig_sc
         except Exception:
             log.error("Errore in aggiorna_sensitivita:\n%s",
                       traceback.format_exc())
-            v = _figura_vuota("Errore")
-            return ("Errore",
-                    html.Span("Errore", style={"color": "#f38ba8"}),
-                    _msg_placeholder("Errore"), v, v)
+            err = _msg_placeholder("Errore")
+            return ("Errore", "", "", err, err, err, err)
 
     # ==================================================================
     # Callback 9: Tab Decisionale — dropdown categorie

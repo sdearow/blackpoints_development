@@ -171,10 +171,14 @@ epdo:
 # ---------------------------------------------------------------------------
 indice_composito:
   pesi:
-    eccesso_eb: 0.40
-    severita: 0.25
-    vulnerabilita: 0.20
-    rischio_velocita: 0.15
+    # Default: l'ICP coincide con la componente A (Eccesso EB-EPDO).
+    # Le altre componenti (severita', vulnerabilita', rischio velocita')
+    # restano disponibili e si possono pesare interattivamente nella tab
+    # "Sensitivita' pesi" della dashboard per analisi what-if.
+    eccesso_eb: 1.00
+    severita: 0.00
+    vulnerabilita: 0.00
+    rischio_velocita: 0.00
   # Percentili usati per la normalizzazione robusta delle componenti.
   percentile_min: 1
   percentile_max: 99

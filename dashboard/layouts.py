@@ -414,65 +414,114 @@ def _slider_peso(id_slider: str, label: str, valore: float) -> html.Div:
 
 
 def tab_sensitivita() -> html.Div:
-    return html.Div(
+    # --- Colonna sinistra: ranking con pesi default (solo Eccesso EPDO) ---
+    colonna_sinistra = html.Div(
         [
             html.Div(
                 [
-                    html.Div(
-                        [
-                            html.P("Pesi ICP (normalizzati automaticamente a somma = 1)",
-                                   style=STILE_TITOLO_CARD),
-                            _slider_peso("peso-A", "A — Eccesso EB-EPDO", 0.40),
-                            _slider_peso("peso-B", "B — Severita'", 0.25),
-                            _slider_peso("peso-C", "C — Vulnerabilita' pedoni", 0.20),
-                            _slider_peso("peso-D", "D — Dispersione velocita'", 0.15),
-                            html.Div(id="pesi-normalizzati",
-                                     style={"color": "#a6adc8", "fontSize": "12px",
-                                            "marginTop": "8px"}),
-                        ],
-                        style={**STILE_CARD, "width": "350px", "flexShrink": "0"},
+                    html.P("Filtri", style=STILE_TITOLO_CARD),
+                    html.Label("Categoria stradale (segmenti)",
+                               style={"color": "#cdd6f4", "fontSize": "12px",
+                                      "fontWeight": "600"}),
+                    dcc.Dropdown(
+                        id="sens-filtro-categoria",
+                        placeholder="Tutte le categorie",
+                        multi=True,
+                        style={"backgroundColor": "#313244", "color": "#cdd6f4",
+                               "marginBottom": "12px", "marginTop": "4px"},
                     ),
-                    html.Div(
-                        [
-                            html.P("Stabilita' ranking (Spearman rho vs pesi default)",
-                                   style=STILE_TITOLO_CARD),
-                            html.Div(id="sens-rho", style={"color": "#cdd6f4",
-                                                           "fontSize": "28px",
-                                                           "fontWeight": "700",
-                                                           "textAlign": "center",
-                                                           "padding": "30px 0"}),
-                            html.P("Confronto top 20 (default vs nuovi pesi)",
-                                   style=STILE_TITOLO_CARD),
-                            html.Div(id="sens-confronto-top"),
+                    html.Label("Tipo intersezione",
+                               style={"color": "#cdd6f4", "fontSize": "12px",
+                                      "fontWeight": "600"}),
+                    dcc.RadioItems(
+                        id="sens-filtro-int",
+                        options=[
+                            {"label": " Tutte", "value": "tutte"},
+                            {"label": " Semaforizzate", "value": "semaforizzata"},
+                            {"label": " Non semaforizzate", "value": "non_semaforizzata"},
                         ],
-                        style={**STILE_CARD, "flex": "1"},
+                        value="tutte",
+                        labelStyle={"display": "block", "color": "#cdd6f4",
+                                    "fontSize": "13px"},
+                        inputStyle={"marginRight": "6px"},
+                        style={"marginTop": "4px"},
                     ),
                 ],
-                style={"display": "flex", "gap": "12px"},
+                style=STILE_CARD,
             ),
             html.Div(
                 [
-                    html.Div(
-                        [
-                            html.P("Distribuzione ICP con nuovi pesi", style=STILE_TITOLO_CARD),
-                            dcc.Graph(id="sens-hist-icp", style={"height": "380px"},
-                                      config={"displayModeBar": True}),
-                        ],
-                        style={**STILE_CARD, "flex": "1"},
-                    ),
-                    html.Div(
-                        [
-                            html.P("ICP default vs ICP nuovi pesi (top 500)", style=STILE_TITOLO_CARD),
-                            dcc.Graph(id="sens-scatter-icp", style={"height": "380px"},
-                                      config={"displayModeBar": True}),
-                        ],
-                        style={**STILE_CARD, "flex": "1"},
-                    ),
+                    html.P("Ranking segmenti — pesi default (solo Eccesso EPDO)",
+                           style=STILE_TITOLO_CARD),
+                    html.Div(id="sens-rank-seg-default"),
                 ],
-                style={"display": "flex", "gap": "12px"},
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Ranking intersezioni — pesi default (solo Eccesso EPDO)",
+                           style=STILE_TITOLO_CARD),
+                    html.Div(id="sens-rank-int-default"),
+                ],
+                style=STILE_CARD,
             ),
         ],
-        style={"padding": "12px", "backgroundColor": "#181825"},
+        style={"flex": "1", "minWidth": "0"},
+    )
+
+    # --- Colonna destra: ranking con pesi personalizzati ---
+    colonna_destra = html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Pesi ICP personalizzati (normalizzati a somma = 1)",
+                           style=STILE_TITOLO_CARD),
+                    _slider_peso("peso-A", "A — Eccesso EB-EPDO", 1.00),
+                    _slider_peso("peso-B", "B — Severita'", 0.00),
+                    _slider_peso("peso-C", "C — Vulnerabilita' pedoni", 0.00),
+                    _slider_peso("peso-D", "D — Dispersione velocita'", 0.00),
+                    html.Div(id="pesi-normalizzati",
+                             style={"color": "#a6adc8", "fontSize": "12px",
+                                    "marginTop": "8px"}),
+                    html.Div(
+                        [
+                            html.Span("Spearman rho vs default — ",
+                                      style={"color": "#a6adc8", "fontSize": "12px"}),
+                            html.Span(id="sens-rho-seg",
+                                      style={"fontSize": "12px", "fontWeight": "700"}),
+                            html.Span(id="sens-rho-int",
+                                      style={"fontSize": "12px", "fontWeight": "700",
+                                             "marginLeft": "12px"}),
+                        ],
+                        style={"marginTop": "10px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Ranking segmenti — pesi personalizzati",
+                           style=STILE_TITOLO_CARD),
+                    html.Div(id="sens-rank-seg-nuovo"),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Ranking intersezioni — pesi personalizzati",
+                           style=STILE_TITOLO_CARD),
+                    html.Div(id="sens-rank-int-nuovo"),
+                ],
+                style=STILE_CARD,
+            ),
+        ],
+        style={"flex": "1", "minWidth": "0"},
+    )
+
+    return html.Div(
+        [colonna_sinistra, colonna_destra],
+        style={"display": "flex", "gap": "12px",
+               "padding": "12px", "backgroundColor": "#181825"},
     )
 
 
@@ -607,7 +656,7 @@ def costruisci_layout() -> html.Div:
             html.Div(id="contenuto-tab"),
             dcc.Store(id="sito-selezionato"),
             dcc.Store(id="pesi-correnti",
-                      data={"A": 40, "B": 25, "C": 20, "D": 15}),
+                      data={"A": 100, "B": 0, "C": 0, "D": 0}),
         ],
         style={"fontFamily": "'Inter', 'Segoe UI', sans-serif",
                "backgroundColor": "#181825", "minHeight": "100vh"},
