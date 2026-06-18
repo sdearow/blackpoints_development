@@ -35,6 +35,12 @@ _LAYOUT_BASE = dict(
 _ScatterMap = getattr(go, "Scattermap", None) or getattr(go, "Scattermapbox", None)
 _MAP_KEY = "map" if hasattr(go, "Scattermap") else "mapbox"
 
+# Sequential YlOrRd 8-class for excess EPDO gradient (low → high).
+_SCALA_EPDO = [
+    "#ffffb2", "#fed976", "#feb24c", "#fd8d3c",
+    "#fc4e2a", "#e31a1c", "#bd0026", "#800026",
+]
+
 
 def _figura_vuota(messaggio: str = "") -> go.Figure:
     fig = go.Figure()
@@ -174,19 +180,63 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             sub = df_w.loc[mask].nlargest(top_n, metrica_col)
 
             fig = go.Figure()
-            fasce_con_legenda = set()
+
+            # --- Color binning by excess_EPDO_i ---
+            epdo_col = "excess_EPDO_i"
+            if epdo_col not in sub.columns or sub[epdo_col].isna().all():
+                epdo_col = "ICP"
+            epdo_vals = sub[epdo_col].fillna(0)
+
+            n_palette = len(_SCALA_EPDO)
+            if len(epdo_vals) < 2 or epdo_vals.nunique() < 2:
+                sub = sub.copy()
+                sub["_cbin"] = 0
+                bin_edges = [epdo_vals.min(), epdo_vals.max()]
+                n_bins_actual = 1
+            else:
+                sub = sub.copy()
+                try:
+                    sub["_cbin"], bin_edges = pd.qcut(
+                        epdo_vals, q=n_palette, retbins=True,
+                        labels=False, duplicates="drop")
+                    sub["_cbin"] = sub["_cbin"].fillna(0).astype(int)
+                    n_bins_actual = int(sub["_cbin"].max()) + 1
+                except (ValueError, TypeError):
+                    sub["_cbin"] = 0
+                    bin_edges = [epdo_vals.min(), epdo_vals.max()]
+                    n_bins_actual = 1
+
+            # Map bin index → color (spread across palette evenly)
+            if n_bins_actual >= n_palette:
+                bin_colors = _SCALA_EPDO[:n_bins_actual]
+            elif n_bins_actual == 1:
+                bin_colors = [_SCALA_EPDO[n_palette // 2]]
+            else:
+                step = (n_palette - 1) / max(n_bins_actual - 1, 1)
+                bin_colors = [_SCALA_EPDO[int(round(i * step))]
+                              for i in range(n_bins_actual)]
+
+            bin_labels = []
+            for i in range(n_bins_actual):
+                lo = bin_edges[i] if i < len(bin_edges) else bin_edges[-1]
+                hi = (bin_edges[i + 1] if i + 1 < len(bin_edges)
+                      else bin_edges[-1])
+                bin_labels.append(f"{lo:.0f}–{hi:.0f}")
+
+            bins_shown = set()
 
             # --- Segments as lines ---
-            seg = sub[sub["tipo_sito"] == "segmento"] if "segmento" in (tipi or []) else sub.iloc[:0]
-            has_coords = "geom_coords" in seg.columns if not seg.empty else False
+            seg = (sub[sub["tipo_sito"] == "segmento"]
+                   if "segmento" in (tipi or []) else sub.iloc[:0])
+            has_coords = ("geom_coords" in seg.columns) if not seg.empty else False
 
             if not seg.empty and has_coords:
-                for fascia in ORDINE_FASCE:
-                    seg_f = seg[seg["fascia_priorita"] == fascia]
-                    if seg_f.empty:
+                for bi in range(n_bins_actual):
+                    seg_b = seg[seg["_cbin"] == bi]
+                    if seg_b.empty:
                         continue
                     lats, lons = [], []
-                    for coords in seg_f["geom_coords"]:
+                    for coords in seg_b["geom_coords"]:
                         if not isinstance(coords, list) or not coords:
                             continue
                         for c in coords:
@@ -196,23 +246,22 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                         lats.append(None)
 
                     if lats:
-                        fasce_con_legenda.add(fascia)
+                        bins_shown.add(bi)
                         fig.add_trace(_ScatterMap(
                             lat=lats, lon=lons,
                             mode="lines",
-                            line=dict(color=COLORI_FASCE[fascia], width=3),
-                            name=fascia.capitalize(),
-                            legendgroup=fascia,
+                            line=dict(color=bin_colors[bi], width=3),
+                            name=f"Ecc. EPDO {bin_labels[bi]}",
+                            legendgroup=f"ebin_{bi}",
                             hoverinfo="skip",
                         ))
 
                 hover_seg = [
-                    f"<b>{t}</b><br>{metrica_col}: {mv:.1f} | {f}"
+                    f"<b>{t}</b><br>Ecc. EPDO: {epdo:.1f}"
                     f"<br>Inc: {int(n)} | ICP: {icp:.1f}"
-                    for t, mv, f, n, icp in zip(
+                    for t, epdo, n, icp in zip(
                         seg["toponimo"],
-                        seg[metrica_col],
-                        seg["fascia_priorita"],
+                        seg[epdo_col],
                         seg.get("n_incidenti", pd.Series(0, index=seg.index)),
                         seg["ICP"])
                 ]
@@ -220,71 +269,74 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                     lat=seg["lat"].values, lon=seg["lon"].values,
                     mode="markers",
                     marker=dict(size=3, opacity=0.01,
-                                color=[COLORI_FASCE.get(f, _TESTO)
-                                       for f in seg["fascia_priorita"]]),
+                                color=[bin_colors[int(b)]
+                                       for b in seg["_cbin"]]),
                     text=hover_seg, hoverinfo="text",
                     showlegend=False,
                     customdata=seg.index.tolist(),
                     name="",
                 ))
             elif not seg.empty:
-                for fascia in ORDINE_FASCE:
-                    seg_f = seg[seg["fascia_priorita"] == fascia]
-                    if seg_f.empty:
+                for bi in range(n_bins_actual):
+                    seg_b = seg[seg["_cbin"] == bi]
+                    if seg_b.empty:
                         continue
-                    fasce_con_legenda.add(fascia)
+                    bins_shown.add(bi)
                     hover = [
-                        f"<b>{t}</b><br>{metrica_col}: {mv:.1f} | {f}"
+                        f"<b>{t}</b><br>Ecc. EPDO: {epdo:.1f}"
                         f"<br>Inc: {int(n)}"
-                        for t, mv, f, n in zip(
-                            seg_f["toponimo"], seg_f[metrica_col],
-                            seg_f["fascia_priorita"],
-                            seg_f.get("n_incidenti", pd.Series(0, index=seg_f.index)))
+                        for t, epdo, n in zip(
+                            seg_b["toponimo"], seg_b[epdo_col],
+                            seg_b.get("n_incidenti",
+                                      pd.Series(0, index=seg_b.index)))
                     ]
                     fig.add_trace(_ScatterMap(
-                        lat=seg_f["lat"].values, lon=seg_f["lon"].values,
+                        lat=seg_b["lat"].values, lon=seg_b["lon"].values,
                         mode="markers",
                         marker=dict(size=7, opacity=0.85,
-                                    color=COLORI_FASCE[fascia]),
+                                    color=bin_colors[bi]),
                         text=hover, hoverinfo="text",
-                        name=fascia.capitalize(),
-                        legendgroup=fascia,
-                        customdata=seg_f.index.tolist(),
+                        name=f"Ecc. EPDO {bin_labels[bi]}",
+                        legendgroup=f"ebin_{bi}",
+                        customdata=seg_b.index.tolist(),
                     ))
 
             # --- Intersections as points ---
-            inter = sub[sub["tipo_sito"] == "intersezione"] if "intersezione" in (tipi or []) else sub.iloc[:0]
+            inter = (sub[sub["tipo_sito"] == "intersezione"]
+                     if "intersezione" in (tipi or []) else sub.iloc[:0])
             if not inter.empty:
                 topo_int = inter["toponimo"].where(
                     inter["toponimo"].astype(str).str.strip() != "",
-                    other=inter.get("id_nodo", pd.Series("", index=inter.index)).apply(
-                        lambda x: f"Int. #{int(x)}" if pd.notna(x) else "Intersezione"))
-                for fascia in ORDINE_FASCE:
-                    int_f = inter[inter["fascia_priorita"] == fascia]
-                    if int_f.empty:
+                    other=inter.get(
+                        "id_nodo", pd.Series("", index=inter.index)
+                    ).apply(lambda x: f"Int. #{int(x)}"
+                            if pd.notna(x) else "Intersezione"))
+                for bi in range(n_bins_actual):
+                    int_b = inter[inter["_cbin"] == bi]
+                    if int_b.empty:
                         continue
-                    show_leg = fascia not in fasce_con_legenda
-                    fasce_con_legenda.add(fascia)
+                    show_leg = bi not in bins_shown
+                    bins_shown.add(bi)
                     hover = [
-                        f"<b>{t}</b><br>{metrica_col}: {mv:.1f} | {f}"
+                        f"<b>{t}</b><br>Ecc. EPDO: {epdo:.1f}"
                         f"<br>Inc: {int(n)} | ICP: {icp:.1f}"
-                        for t, mv, f, n, icp in zip(
-                            topo_int.loc[int_f.index],
-                            int_f[metrica_col],
-                            int_f["fascia_priorita"],
-                            int_f.get("n_incidenti", pd.Series(0, index=int_f.index)),
-                            int_f["ICP"])
+                        for t, epdo, n, icp in zip(
+                            topo_int.loc[int_b.index],
+                            int_b[epdo_col],
+                            int_b.get("n_incidenti",
+                                      pd.Series(0, index=int_b.index)),
+                            int_b["ICP"])
                     ]
                     fig.add_trace(_ScatterMap(
-                        lat=int_f["lat"].values, lon=int_f["lon"].values,
+                        lat=int_b["lat"].values, lon=int_b["lon"].values,
                         mode="markers",
                         marker=dict(size=9, opacity=0.9,
-                                    color=COLORI_FASCE[fascia]),
+                                    color=bin_colors[bi]),
                         text=hover, hoverinfo="text",
-                        name=fascia.capitalize(),
-                        legendgroup=fascia,
+                        name=f"Ecc. EPDO {bin_labels[bi]}",
+                        legendgroup=f"ebin_{bi}",
                         showlegend=show_leg,
-                        customdata=int_f.index.tolist(),
+                        customdata=int_b.index.tolist(),
                     ))
 
             layout_map = {
