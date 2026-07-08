@@ -21,6 +21,12 @@ if [[ -f "data/raw/censimento/Sezioni_ISTAT.gpkg" ]]; then
     echo "=========================================="
     python -m src.s0c_censimento
 fi
+if [[ -d "data/raw/progetti" ]]; then
+    echo "=========================================="
+    echo ">>> Esecuzione: src.s0d_interventi"
+    echo "=========================================="
+    python -m src.s0d_interventi
+fi
 
 STEPS=(
     "src.s00_pulizia_incidenti"

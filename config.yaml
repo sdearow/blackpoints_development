@@ -72,9 +72,12 @@ paths:
     # Tracciato colonne documentato in TRACCIATO_FILE_REGIONALI.xlsx.
     censimento_sezioni: "data/raw/censimento/Sezioni_ISTAT.gpkg"
     censimento_indicatori: "data/raw/censimento/Indicatori_ISTAT_Roma.xlsx"
+    # Database progetti/interventi (WP0/T0.2) - registro in `interventi`.
+    progetti_dir: "data/raw/progetti"
   interim:
     incidenti_clean: "data/interim/incidenti_clean.gpkg"
     censimento_prep: "data/interim/censimento_prep.gpkg"
+    interventi_prep: "data/interim/interventi_prep.gpkg"
     rete_tomtom_prep: "data/interim/rete_tomtom_prep.gpkg"
     semafori_prep: "data/interim/semafori_prep.gpkg"
     intersezioni: "data/interim/intersezioni.gpkg"
@@ -205,6 +208,66 @@ censimento:
   # Codice PROCOM del comune (Roma Capitale). Il file indicatori e'
   # regionale (R12 Lazio) e va filtrato.
   pro_com: 58091
+
+# ---------------------------------------------------------------------------
+# Database interventi/progetti (s0d) - dotazione del modulo Equita'
+# ---------------------------------------------------------------------------
+interventi:
+  # Data segnaposto finche' le date reali non vengono confermate nel CSV
+  # di override (possono essere anche future per i progetti non attuati).
+  data_placeholder: "2025-01-01"
+  # CSV di override: id_intervento, data_attivazione [, fase].
+  # Compilare partendo dal template reports/interventi_da_datare.csv.
+  date_override: "data/raw/progetti/date_interventi.csv"
+  # Raggio d'influenza (metri) per le geometrie puntuali; per aree e
+  # linee conta l'impronta (raggio 0).
+  raggio_influenza_default_m:
+    velox: 500
+    strada_scolastica: 300
+    ponte_ciclopedonale: 150
+    intervento_puntuale: 150
+    ztl_varco: 150
+    default_punti: 150
+  # Normalizzazione della fase (matching case-insensitive sul valore
+  # grezzo; tutto il resto -> da_definire). "aprovato" e' un typo presente
+  # nel dato sorgente.
+  mappa_fase:
+    realizzato: realizzato
+    approvato: pianificato
+    aprovato: pianificato
+    aggiunto: pianificato
+    "progettazione in corso": in_corso
+  # Registro delle sorgenti: database in divenire, si estende da qui
+  # senza toccare il codice. Campi opzionali: layer, campo_nome,
+  # campo_fase, campo_municipio.
+  sorgenti:
+    - {file: "Velox.gpkg", layer: "velox_12_2025", tipo: "velox",
+       campo_nome: "NOME", campo_fase: "FATT", campo_municipio: "MUN"}
+    - {file: "Isole_Ambientali.gpkg", tipo: "isola_ambientale",
+       campo_nome: "IDnome"}
+    - {file: "Strade_Scolastiche.gpkg", tipo: "strada_scolastica",
+       campo_nome: "scuola", campo_fase: "SAL", campo_municipio: "municipio"}
+    - {file: "Aree_Pedonali.gpkg", tipo: "area_pedonale", campo_nome: "Name"}
+    - {file: "Ciclabilita_Rete.gpkg", tipo: "ciclabile",
+       campo_nome: "Nome", campo_fase: "Stato"}
+    - {file: "Ciclabilita_GRAB.gpkg", tipo: "ciclabile_grab",
+       campo_nome: "NOME", campo_fase: "Stato"}
+    - {file: "Ciclabilita_Ponti_Ciclopedonali.gpkg",
+       tipo: "ponte_ciclopedonale", campo_nome: "Name"}
+    - {file: "Interventi_Puntuali.gpkg", tipo: "intervento_puntuale",
+       campo_nome: "Nome"}
+    - {file: "Interventi_Lineari.gpkg", tipo: "intervento_lineare",
+       campo_nome: "Nome"}
+    - {file: "Interventi.gpkg", tipo: "intervento_area",
+       campo_nome: "indirizzo"}
+    - {file: "ZTL_Varchi.gpkg", tipo: "ztl_varco",
+       campo_nome: "Descriz", campo_fase: "Stato"}
+    - {file: "ZTL_Perimetri.gpkg", tipo: "ztl_perimetro",
+       campo_nome: "Descrizion"}
+    - {file: "Ambito_Balduina.gpkg", tipo: "ambito_progetto", campo_nome: "Nome"}
+    - {file: "Ambito_Colli_Aniene.gpkg", tipo: "ambito_progetto", campo_nome: "Nome"}
+    - {file: "Ambito_Torre_Spaccata.gpkg", tipo: "ambito_progetto", campo_nome: "Nome"}
+    - {file: "Ambito_Trastevere.gpkg", tipo: "ambito_progetto", campo_nome: "Nome"}
 
 # ---------------------------------------------------------------------------
 # Modulo A del PSS - High Injury Network e hotspot NKDE (s07)
