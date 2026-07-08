@@ -198,16 +198,27 @@ def classifica_bivariata(
 
     Ritorna stringhe ``"{i}-{j}"`` con i = classe di bisogno (1=basso,
     n=alto) e j = classe di dotazione. ``"3-1"`` = alto bisogno, bassa
-    dotazione. I quantili degeneri (molti zeri) vengono gestiti con
-    ``duplicates="drop"`` e la classe piu' bassa come default.
+    dotazione.
+
+    Le distribuzioni sono tipicamente zero-inflated (molte unita' con
+    bisogno o dotazione nulli): i quantili semplici collasserebbero le
+    classi. Convenzione (coerente con la normalizzazione zero-inflated
+    di s05): gli zeri stanno sempre in classe 1; i positivi vengono
+    classificati sulle soglie di quantile dei *soli positivi* (i pareggi
+    alla soglia vanno nella classe inferiore).
     """
     def _classi(serie: pd.Series) -> pd.Series:
         s = serie.fillna(0).astype(float)
-        try:
-            c = pd.qcut(s, q=n_classi, labels=False, duplicates="drop")
-        except ValueError:
-            c = pd.Series(0, index=s.index)
-        return c.fillna(0).astype(int) + 1
+        c = pd.Series(1, index=s.index, dtype=int)
+        pos = s > 0
+        if pos.sum() == 0:
+            return c
+        soglie = [
+            float(s.loc[pos].quantile(q / n_classi)) for q in range(1, n_classi)
+        ]
+        for soglia in soglie:
+            c.loc[pos & (s > soglia)] += 1
+        return c.clip(upper=n_classi)
 
     cb = _classi(bisogno)
     cd = _classi(dotazione)

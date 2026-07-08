@@ -88,6 +88,8 @@ paths:
     eb_results: "data/processed/eb_results.parquet"
     priorita_finale: "data/processed/priorita_finale.gpkg"
     nkde: "data/processed/nkde.gpkg"
+    equita: "data/processed/equita.gpkg"
+    equita_indici: "data/processed/equita_indici.json"
 
 # ---------------------------------------------------------------------------
 # Fase 1 - Matching spaziale incidenti <-> rete
@@ -295,6 +297,50 @@ nkde:
   raggio_snap_intersezioni_m: 50
   # Se true, salva solo i lixel con densita' > 0 (riduce molto l'output).
   salva_solo_positivi: true
+
+# ---------------------------------------------------------------------------
+# Modulo B del PSS - Equita' distributiva (s08, cuore del paper)
+# ---------------------------------------------------------------------------
+equita:
+  # Pesi del composite index di vulnerabilita' sociale (schema principale).
+  # NB: reddito non disponibile a scala di sezione -> istruzione e
+  # occupazione come proxy socio-economiche (limite dichiarato).
+  pesi_vulnerabilita:
+    perc_bambini: 0.20
+    perc_anziani: 0.20
+    perc_stranieri: 0.15
+    perc_istruzione_bassa: 0.25
+    perc_non_occupati: 0.20
+  # Schemi alternativi per l'analisi di sensibilita' (tabella nel paper).
+  schemi_sensibilita:
+    equi:
+      perc_bambini: 0.2
+      perc_anziani: 0.2
+      perc_stranieri: 0.2
+      perc_istruzione_bassa: 0.2
+      perc_non_occupati: 0.2
+    focus_eta:
+      perc_bambini: 0.35
+      perc_anziani: 0.35
+      perc_stranieri: 0.10
+      perc_istruzione_bassa: 0.10
+      perc_non_occupati: 0.10
+    focus_deprivazione:
+      perc_bambini: 0.10
+      perc_anziani: 0.10
+      perc_stranieri: 0.15
+      perc_istruzione_bassa: 0.35
+      perc_non_occupati: 0.30
+  # Combinazione bisogno = f(vulnerabilita', rischio):
+  # "geometrica" = sqrt(v*r) (entrambi necessari), "pesata" = media pesata.
+  metodo_bisogno: "geometrica"
+  peso_rischio: 0.5
+  # Tipologie considerate nella dotazione (null = tutte). La scelta resta
+  # esplorabile in dashboard filtrando per tipo.
+  tipi_dotazione: null
+  # LISA bivariata: vicini KNN e soglia di significativita'.
+  lisa_k_vicini: 8
+  lisa_p_max: 0.05
 
 # ---------------------------------------------------------------------------
 # Correzioni empiriche ai dati sorgente

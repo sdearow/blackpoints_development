@@ -28,6 +28,17 @@ if [[ -d "data/raw/progetti" ]]; then
     python -m src.s0d_interventi
 fi
 
+# Il modulo Equita' (s08) gira dopo la pipeline principale: dipende da
+# censimento (s0c), interventi (s0d) e priorita_finale (s05/s07).
+esegui_equita() {
+    if [[ -f "data/interim/censimento_prep.gpkg" && -f "data/interim/interventi_prep.gpkg" ]]; then
+        echo "=========================================="
+        echo ">>> Esecuzione: src.s08_equita"
+        echo "=========================================="
+        python -m src.s08_equita
+    fi
+}
+
 STEPS=(
     "src.s00_pulizia_incidenti"
     "src.s01_preparazione_rete"
@@ -45,5 +56,7 @@ for step in "${STEPS[@]}"; do
     echo "=========================================="
     python -m "${step}"
 done
+
+esegui_equita
 
 echo "Pipeline completata con successo."
