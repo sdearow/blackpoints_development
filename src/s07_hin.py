@@ -370,6 +370,26 @@ def main(config: dict[str, Any]) -> None:
     if gdf_inc.crs != gdf_seg.crs:
         gdf_inc = gdf_inc.to_crs(gdf_seg.crs)
 
+    # Adattatore di schema: s02 salva ``match_type``/``id_match``; le
+    # funzioni di questo modulo lavorano con ``tipo_sito``/``id_sito``.
+    # ``segmento_toponimo`` e' a tutti gli effetti un match su segmento.
+    if "tipo_sito" not in gdf_inc.columns and "match_type" in gdf_inc.columns:
+        gdf_inc["tipo_sito"] = gdf_inc["match_type"].replace(
+            {"segmento_toponimo": "segmento"}
+        )
+        gdf_inc["id_sito"] = gdf_inc["id_match"]
+
+    # Coerenza col periodo delle SPF: la NKDE usa gli stessi anni con cui
+    # sono stati contati gli incidenti in s03 (altrimenti mescolerebbe
+    # epoche diverse nella densita').
+    anni_spf = config.get("spf", {}).get("anni_incidenti")
+    if anni_spf and "anno" in gdf_inc.columns:
+        n_prima = len(gdf_inc)
+        gdf_inc = gdf_inc[gdf_inc["anno"].isin([int(a) for a in anni_spf])].copy()
+        log.info(
+            "Filtro anni SPF %s: %d -> %d incidenti", anni_spf, n_prima, len(gdf_inc)
+        )
+
     # --- HIN --------------------------------------------------------
     metrica = str(cfg_hin.get("metrica", "ksi"))
     usa_eb = bool(cfg_hin.get("usa_eb", True))
