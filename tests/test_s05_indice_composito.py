@@ -37,10 +37,11 @@ def _df_segmenti_finto(n: int = 100) -> pd.DataFrame:
             "excess_EPDO_i": rng.normal(5, 3, n),
             "n_incidenti": rng.poisson(5, n).astype(float),
             "n_mortali": rng.binomial(1, 0.01, n).astype(float),
-            "n_feriti_gravi": rng.binomial(2, 0.05, n).astype(float),
+            "n_feriti": rng.binomial(2, 0.05, n).astype(float),
             "n_pedoni": rng.binomial(2, 0.1, n).astype(float),
             "v85_medio": rng.uniform(40, 80, n),
             "limite_velocita_medio": [50.0] * n,
+            "iqr_velocita_medio": rng.uniform(2.0, 15.0, n),
             "iqr_norm_medio": rng.uniform(0.05, 0.3, n),
         }
     )
@@ -54,7 +55,7 @@ def _df_intersezioni_finto(n: int = 50) -> pd.DataFrame:
             "excess_EPDO_i": rng.normal(3, 2, n),
             "n_incidenti": rng.poisson(8, n).astype(float),
             "n_mortali": rng.binomial(1, 0.01, n).astype(float),
-            "n_feriti_gravi": rng.binomial(2, 0.05, n).astype(float),
+            "n_feriti": rng.binomial(2, 0.05, n).astype(float),
             "n_pedoni": rng.binomial(3, 0.15, n).astype(float),
         }
     )
@@ -105,16 +106,26 @@ def test_componente_A_nan_diventa_zero():
 
 
 def test_componente_B_formula():
+    # n_incidenti >= n_min -> credibilita' 1: B = (mortali+feriti)/n.
     df = pd.DataFrame(
-        {"n_incidenti": [10.0], "n_mortali": [1.0], "n_feriti_gravi": [2.0]}
+        {"n_incidenti": [10.0], "n_mortali": [1.0], "n_feriti": [2.0]}
     )
     b = calcola_componente_B(df)
     assert b.iloc[0] == pytest.approx(3.0 / 10.0)
 
 
+def test_componente_B_credibilita_smorza_pochi_incidenti():
+    # 2 incidenti su n_min=5 -> credibilita' 2/5: B = (2/2) * (2/5).
+    df = pd.DataFrame(
+        {"n_incidenti": [2.0], "n_mortali": [1.0], "n_feriti": [1.0]}
+    )
+    b = calcola_componente_B(df, n_min=5)
+    assert b.iloc[0] == pytest.approx(0.4)
+
+
 def test_componente_B_zero_incidenti():
     df = pd.DataFrame(
-        {"n_incidenti": [0.0], "n_mortali": [0.0], "n_feriti_gravi": [0.0]}
+        {"n_incidenti": [0.0], "n_mortali": [0.0], "n_feriti": [0.0]}
     )
     b = calcola_componente_B(df)
     assert b.iloc[0] == pytest.approx(0.0)
@@ -149,30 +160,19 @@ def test_componente_C_zero_incidenti():
 # ---------------------------------------------------------------------------
 
 
-def test_componente_D_segmenti_eccesso_zero_se_v85_sotto_limite():
-    df = pd.DataFrame(
-        {
-            "v85_medio": [40.0],
-            "limite_velocita_medio": [50.0],
-            "iqr_norm_medio": [0.1],
-        }
-    )
+def test_componente_D_segmenti_usa_iqr_velocita():
+    # D = IQR delle velocita' in km/h (V75-V25), indipendente dai limiti
+    # (non sempre aggiornati nella base dati).
+    df = pd.DataFrame({"iqr_velocita_medio": [7.5], "iqr_norm_medio": [0.1]})
     d = calcola_componente_D_segmenti(df)
-    # eccesso = max(40/50 - 1, 0) = 0; D = 0 + 0.5 * 0.1 = 0.05
-    assert d.iloc[0] == pytest.approx(0.05)
+    assert d.iloc[0] == pytest.approx(7.5)
 
 
-def test_componente_D_segmenti_eccesso_positivo():
-    df = pd.DataFrame(
-        {
-            "v85_medio": [60.0],
-            "limite_velocita_medio": [50.0],
-            "iqr_norm_medio": [0.0],
-        }
-    )
+def test_componente_D_segmenti_fallback_iqr_norm():
+    # Retro-compatibilita': senza iqr_velocita_medio usa iqr_norm_medio.
+    df = pd.DataFrame({"iqr_norm_medio": [0.2]})
     d = calcola_componente_D_segmenti(df)
-    # eccesso = 60/50 - 1 = 0.2; D = 0.5 * 0.2 = 0.1
-    assert d.iloc[0] == pytest.approx(0.1)
+    assert d.iloc[0] == pytest.approx(0.2)
 
 
 def test_componente_D_segmenti_non_negativa():
@@ -295,11 +295,15 @@ def test_classifica_matrice_quattro_quadranti():
 
 
 def test_classifica_matrice_tutti_i_quadranti_presenti():
-    # Quattro blocchi da 100, uno per quadrante (alto/basso A x alto/basso B).
+    # Le soglie sono al 75° percentile (sui siti con incidenti): la coda
+    # "alta" deve essere < 25% per superare la soglia. 400 siti:
+    # 225 Q4 (basso/basso), 75 Q3 (basso/alto), 75 Q2 (alto/basso),
+    # 25 Q1 (alto/alto).
     df = pd.DataFrame(
         {
-            "A": [1.0] * 100 + [10.0] * 100 + [1.0] * 100 + [10.0] * 100,
-            "B": [0.1] * 100 + [0.1] * 100 + [0.9] * 100 + [0.9] * 100,
+            "A": [1.0] * 225 + [1.0] * 75 + [10.0] * 75 + [10.0] * 25,
+            "B": [0.1] * 225 + [0.9] * 75 + [0.1] * 75 + [0.9] * 25,
+            "n_incidenti": [1.0] * 400,
         }
     )
     quadranti = classifica_matrice(df)

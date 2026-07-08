@@ -228,12 +228,24 @@ def test_estrai_intersezioni_filtra_falsi_incroci_stesso_toponimo():
     assert len(gdf_int_no) == 1
 
 
-def test_estrai_intersezioni_non_filtra_grado_4_stesso_toponimo():
-    """Nodi a grado >= 4 non vengono mai filtrati, anche con un solo toponimo."""
+def test_estrai_intersezioni_filtra_grado_4_stesso_toponimo():
+    """Un nodo a grado 4 con un solo toponimo distinto viene filtrato come
+    falso incrocio (carreggiate separate della stessa strada) - criterio 1
+    di filtra_falsi_incroci, che copre i gradi 3-4."""
     gdf = _gdf_rete_a_croce()
     gdf["toponimo"] = ["Via Roma", "Via Roma", "Via Roma", "Via Roma"]
     gdf_int, _ = estrai_intersezioni(gdf, tolleranza_m=0.5, filtra_falsi_incroci=True)
+    assert len(gdf_int) == 0
+
+
+def test_estrai_intersezioni_tiene_grado_4_toponimi_distinti():
+    """Un vero incrocio a 4 bracci con 3+ toponimi distinti non viene
+    filtrato da nessun criterio."""
+    gdf = _gdf_rete_a_croce()
+    gdf["toponimo"] = ["Via Roma", "Via Roma", "Via Milano", "Via Torino"]
+    gdf_int, _ = estrai_intersezioni(gdf, tolleranza_m=0.5, filtra_falsi_incroci=True)
     assert len(gdf_int) == 1
+    assert gdf_int.iloc[0]["n_archi"] == 4
 
 
 def test_costruisci_segmenti_attraversa_falso_incrocio():
