@@ -20,6 +20,7 @@ STEPS=(
     "src.s03_spf"
     "src.s04_empirical_bayes"
     "src.s05_indice_composito"
+    "src.s07_hin"
     "src.s06_export"
 )
 

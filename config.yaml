@@ -79,6 +79,7 @@ paths:
     spf_models: "data/processed/spf_models.pkl"
     eb_results: "data/processed/eb_results.parquet"
     priorita_finale: "data/processed/priorita_finale.gpkg"
+    nkde: "data/processed/nkde.gpkg"
 
 # ---------------------------------------------------------------------------
 # Fase 1 - Matching spaziale incidenti <-> rete
@@ -191,6 +192,33 @@ classificazione:
   # Soglie percentili per le 5 fasce di priorita' (Task 4.2).
   # < 20 monitoraggio, 20-40 bassa, 40-60 media, 60-80 alta, > 80 altissima.
   soglie_percentili: [20, 40, 60, 80]
+
+# ---------------------------------------------------------------------------
+# Modulo A del PSS - High Injury Network e hotspot NKDE (s07)
+# ---------------------------------------------------------------------------
+hin:
+  # Quota di KSI (morti + feriti) che la HIN deve coprire.
+  soglia_copertura: 0.70
+  # Se true, stabilizza la conta KSI con la stima EB (KSI * EB_i/O_i):
+  # ranking piu' robusto agli eventi rari.
+  usa_eb: true
+  # Misura di gravita' per il ranking: "ksi" (morti+feriti) o "epdo".
+  metrica: "ksi"
+
+nkde:
+  # Lunghezza dei lixel in cui vengono spezzati i segmenti (metri).
+  lunghezza_lixel_m: 20
+  # Bandwidth del kernel quartico 1D (metri, lungo la linea).
+  bandwidth_m: 200
+  # Peso di ciascun incidente: "conteggio" (=1) o "epdo" (pesi epdo.pesi).
+  peso: "epdo"
+  # Se true, gli incidenti abbinati alle intersezioni vengono riagganciati
+  # al segmento piu' vicino (la massa dominante degli incidenti e' agli
+  # incroci e altrimenti sparirebbe dalla densita').
+  includi_incidenti_intersezione: true
+  raggio_snap_intersezioni_m: 50
+  # Se true, salva solo i lixel con densita' > 0 (riduce molto l'output).
+  salva_solo_positivi: true
 
 # ---------------------------------------------------------------------------
 # Correzioni empiriche ai dati sorgente

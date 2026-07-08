@@ -45,6 +45,7 @@ blackpoints/
 |   |-- s03_spf.py
 |   |-- s04_empirical_bayes.py
 |   |-- s05_indice_composito.py
+|   |-- s07_hin.py             # High Injury Network + hotspot NKDE (Modulo A del PSS)
 |   |-- s06_export.py
 |   `-- utils/
 |       |-- geo_utils.py

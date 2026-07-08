@@ -162,8 +162,9 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
         Input("pesi-correnti", "data"),
         Input("filtro-intersezioni", "value"),
         Input("filtro-metrica", "value"),
+        Input("filtro-hin", "value"),
     )
-    def aggiorna_mappa(tipi, fasce, top_n, pesi, filtro_int, metrica):
+    def aggiorna_mappa(tipi, fasce, top_n, pesi, filtro_int, metrica, filtro_hin):
         try:
             df_w = _ricalcola_icp_fasce(df, pesi) if pesi else df
 
@@ -174,6 +175,14 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                 mask = mask & (
                     (df_w["tipo_sito"] != "intersezione")
                     | (df_w["is_semaforizzata"].fillna(False) == is_sem)
+                )
+
+            # Il flag HIN esiste solo sui segmenti: il filtro li restringe
+            # alla High Injury Network e lascia intatte le intersezioni.
+            if filtro_hin == "hin" and "is_hin" in df_w.columns:
+                mask = mask & (
+                    (df_w["tipo_sito"] != "segmento")
+                    | (df_w["is_hin"].fillna(False).astype(bool))
                 )
 
             metrica_col = metrica if metrica in df_w.columns else "ICP"

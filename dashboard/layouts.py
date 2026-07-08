@@ -101,6 +101,22 @@ def _pannello_filtri() -> html.Div:
             ),
             html.Div(
                 [
+                    html.P("Rete", style=STILE_TITOLO_CARD),
+                    dcc.RadioItems(
+                        id="filtro-hin",
+                        options=[
+                            {"label": " Tutta la rete", "value": "tutta"},
+                            {"label": " Solo HIN", "value": "hin"},
+                        ],
+                        value="tutta",
+                        labelStyle={"display": "block", "color": "#cdd6f4", "fontSize": "13px"},
+                        inputStyle={"marginRight": "6px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
                     html.P("Fascia priorita'", style=STILE_TITOLO_CARD),
                     dcc.Checklist(
                         id="filtro-fascia",
@@ -121,6 +137,8 @@ def _pannello_filtri() -> html.Div:
                             {"label": " ICP", "value": "ICP"},
                             {"label": " N. incidenti", "value": "n_incidenti"},
                             {"label": " Eccesso EPDO", "value": "excess_EPDO_i"},
+                            {"label": " KSI/km", "value": "ksi_km"},
+                            {"label": " Hotspot NKDE", "value": "nkde_max"},
                         ],
                         value="ICP",
                         labelStyle={"display": "block", "color": "#cdd6f4", "fontSize": "13px"},
