@@ -54,8 +54,9 @@ def _colonne_export(gdf: gpd.GeoDataFrame) -> list[str]:
         "id_segmento", "id_nodo", "toponimo", "tipo_sito",
         "n_incidenti", "n_mortali", "n_feriti",
         "n_solo_danni", "n_pedoni",
-        "EB_i", "excess_i", "excess_EPDO_i",
+        "E_i", "EB_i", "excess_i", "excess_EPDO_i",
         "costo_sociale_eur", "costo_sociale_eccesso_eur",
+        "ksi_km", "is_hin", "rank_ksi", "nkde_max",
         "A_norm", "B_norm", "C_norm", "D_norm",
         "ICP", "fascia_priorita", "quadrante_rischio",
         "v85_medio", "limite_velocita_medio", "tgm_medio", "lunghezza_m",
@@ -96,6 +97,7 @@ def _colonne_excel(df: pd.DataFrame) -> list[str]:
         "n_solo_danni", "n_pedoni",
         "EB_i", "excess_i", "excess_EPDO_i",
         "costo_sociale_eur", "costo_sociale_eccesso_eur",
+        "ksi_km", "is_hin", "rank_ksi",
         "v85_medio", "limite_velocita_medio", "tgm_medio", "lunghezza_m",
         "flusso_entrante", "is_semaforizzata", "n_archi",
     ]

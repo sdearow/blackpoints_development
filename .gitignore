@@ -76,3 +76,14 @@ reports/generated/
 *.prj
 *.cpg
 *.qix
+
+# --- Censimento ISTAT (input del modulo Equita', versionato esplicitamente) ---
+!data/raw/censimento/
+!data/raw/censimento/*.gpkg
+!data/raw/censimento/*.xlsx
+
+# --- Database progetti/interventi (input del modulo Equita') ---
+!data/raw/progetti/
+!data/raw/progetti/*.gpkg
+!data/raw/progetti/*.qgz
+!data/raw/progetti/*.csv

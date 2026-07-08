@@ -13,6 +13,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Step condizionali: eseguiti solo se i loro dati raw sono presenti
+# (il censimento serve al modulo Equita', non alla pipeline black point).
+if [[ -f "data/raw/censimento/Sezioni_ISTAT.gpkg" ]]; then
+    echo "=========================================="
+    echo ">>> Esecuzione: src.s0c_censimento"
+    echo "=========================================="
+    python -m src.s0c_censimento
+fi
+if [[ -d "data/raw/progetti" ]]; then
+    echo "=========================================="
+    echo ">>> Esecuzione: src.s0d_interventi"
+    echo "=========================================="
+    python -m src.s0d_interventi
+fi
+
 STEPS=(
     "src.s00_pulizia_incidenti"
     "src.s01_preparazione_rete"
@@ -20,6 +35,7 @@ STEPS=(
     "src.s03_spf"
     "src.s04_empirical_bayes"
     "src.s05_indice_composito"
+    "src.s07_hin"
     "src.s06_export"
 )
 

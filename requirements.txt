@@ -13,12 +13,18 @@ numpy>=1.26
 scipy>=1.11
 statsmodels>=0.14
 scikit-learn>=1.3
+pyarrow>=14.0        # engine Parquet per eb_results (s04)
 
 # --- Configurazione ---
 pyyaml>=6.0
 
 # --- Matching toponomastico ---
 rapidfuzz>=3.0
+
+# --- Statistica spaziale (modulo Equita', WP2) ---
+libpysal>=4.9
+esda>=2.5
+mapclassify>=2.6
 
 # --- Visualizzazione e dashboard ---
 matplotlib>=3.8
