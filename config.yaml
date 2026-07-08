@@ -68,8 +68,13 @@ paths:
     strade_extraurbane_cdr: "data/raw/Strade_Extraurbane_CdR.geojson"
     # Strade gestite da altri enti (autostrade, ANAS, ecc.) -> escluse dalla SPF.
     strade_extraurbane_altri_enti: "data/raw/Strade_Extraurbane_Altri_Enti.geojson"
+    # Censimento ISTAT 2021 (WP0/T0.1 - base del modulo Equita').
+    # Tracciato colonne documentato in TRACCIATO_FILE_REGIONALI.xlsx.
+    censimento_sezioni: "data/raw/censimento/Sezioni_ISTAT.gpkg"
+    censimento_indicatori: "data/raw/censimento/Indicatori_ISTAT_Roma.xlsx"
   interim:
     incidenti_clean: "data/interim/incidenti_clean.gpkg"
+    censimento_prep: "data/interim/censimento_prep.gpkg"
     rete_tomtom_prep: "data/interim/rete_tomtom_prep.gpkg"
     semafori_prep: "data/interim/semafori_prep.gpkg"
     intersezioni: "data/interim/intersezioni.gpkg"
@@ -192,6 +197,14 @@ classificazione:
   # Soglie percentili per le 5 fasce di priorita' (Task 4.2).
   # < 20 monitoraggio, 20-40 bassa, 40-60 media, 60-80 alta, > 80 altissima.
   soglie_percentili: [20, 40, 60, 80]
+
+# ---------------------------------------------------------------------------
+# Censimento ISTAT (s0c) - base socio-demografica del modulo Equita'
+# ---------------------------------------------------------------------------
+censimento:
+  # Codice PROCOM del comune (Roma Capitale). Il file indicatori e'
+  # regionale (R12 Lazio) e va filtrato.
+  pro_com: 58091
 
 # ---------------------------------------------------------------------------
 # Modulo A del PSS - High Injury Network e hotspot NKDE (s07)
