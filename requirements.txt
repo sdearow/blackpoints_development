@@ -21,6 +21,11 @@ pyyaml>=6.0
 # --- Matching toponomastico ---
 rapidfuzz>=3.0
 
+# --- Statistica spaziale (modulo Equita', WP2) ---
+libpysal>=4.9
+esda>=2.5
+mapclassify>=2.6
+
 # --- Visualizzazione e dashboard ---
 matplotlib>=3.8
 plotly>=5.18
