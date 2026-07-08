@@ -116,9 +116,12 @@ def _tabella_ranking(d: pd.DataFrame, icp: pd.Series, n: int = 25) -> Any:
     )
 
 
-def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
+def registra_callbacks(
+    app: Any, df: pd.DataFrame, equita: dict | None = None
+) -> None:
     from dashboard.layouts import (tab_mappa, tab_spf, tab_eb,
-                                   tab_sensitivita, tab_decisionale)
+                                   tab_sensitivita, tab_decisionale,
+                                   tab_equita)
 
     # ==================================================================
     # Callback 1: switch tab
@@ -136,7 +139,17 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             return tab_eb()
         if valore == "sensitivita":
             return tab_sensitivita()
+        if valore == "equita":
+            if equita is None:
+                return _msg_placeholder(
+                    "Dati equita' non trovati: eseguire prima la pipeline "
+                    "(s0c censimento, s0d interventi, s08 equita)."
+                )
+            return tab_equita()
         return tab_decisionale()
+
+    if equita is not None:
+        _registra_callbacks_equita(app, equita)
 
     # ==================================================================
     # Callback 1b: aggiorna store pesi dagli slider
@@ -855,3 +868,210 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                       traceback.format_exc())
             v = _figura_vuota("Errore")
             return v, v, [], []
+
+
+# =====================================================================
+# Tab Equita' (Modulo B del PSS)
+# =====================================================================
+
+
+def _registra_callbacks_equita(app: Any, equita: dict) -> None:
+    """Callback della tab Equita'. I dati pesanti (geojson semplificato,
+    DataFrame delle sezioni abitate, indici pre-calcolati) arrivano da
+    app._carica_equita; qui si fanno solo filtri e statistiche leggere
+    (Gini/CI: O(n log n) su ~15k sezioni)."""
+    from dashboard.layouts import COLORI_BIVARIATA, STILE_TITOLO_CARD
+    from dash import html
+
+    from src.utils.equity_utils import concentration_index, curva_lorenz, gini
+
+    dfe: pd.DataFrame = equita["df"]
+    geojson = equita["geojson"]
+    indici = equita.get("indici", {})
+
+    col_dot = sorted(c for c in dfe.columns if c.startswith("dot_"))
+    _ChoroplethMap = (getattr(go, "Choroplethmap", None)
+                      or getattr(go, "Choroplethmapbox", None))
+
+    def _etichetta_tipo(col: str) -> str:
+        return ("Tutti i tipi" if col == "dot_totale"
+                else col.removeprefix("dot_").replace("_", " ").capitalize())
+
+    def _colorscale_discreta(colori: list[str]) -> list[list]:
+        k = len(colori)
+        scala = []
+        for i, c in enumerate(colori):
+            scala.append([i / k, c])
+            scala.append([(i + 1) / k, c])
+        return scala
+
+    @app.callback(
+        Output("equita-tipo", "options"),
+        Input("tabs-principale", "value"),
+    )
+    def popola_tipi(tab):
+        return [{"label": _etichetta_tipo(c), "value": c} for c in col_dot]
+
+    @app.callback(
+        Output("equita-mappa", "figure"),
+        Input("equita-vista", "value"),
+        Input("equita-tipo", "value"),
+    )
+    def aggiorna_mappa_equita(vista, col_tipo):
+        col_tipo = col_tipo if col_tipo in dfe.columns else "dot_totale"
+        d = dfe
+        custom = np.stack(
+            [d["bisogno"].round(1), d["vulnerabilita"].round(1),
+             d[col_tipo], d["pop_totale"].astype(int)], axis=-1,
+        )
+        hover = ("bisogno: %{customdata[0]}<br>"
+                 "vulnerabilita': %{customdata[1]}<br>"
+                 "dotazione: %{customdata[2]}<br>"
+                 "popolazione: %{customdata[3]}<extra></extra>")
+        kwargs: dict = {}
+
+        if vista == "bivariata":
+            classi = sorted(COLORI_BIVARIATA)
+            codice = d["classe_bivariata"].map({c: i for i, c in enumerate(classi)})
+            kwargs = dict(
+                z=codice, zmin=0, zmax=len(classi),
+                colorscale=_colorscale_discreta([COLORI_BIVARIATA[c] for c in classi]),
+                showscale=False,
+            )
+        elif vista == "priority":
+            kwargs = dict(
+                z=d["equity_priority"].astype(int), zmin=0, zmax=2,
+                colorscale=_colorscale_discreta(["#313244", "#f38ba8"]),
+                showscale=False,
+            )
+        elif vista == "lisa":
+            cat = ["ns", "LL", "LH", "HH", "HL"]
+            colori = ["#313244", "#89b4fa", "#94e2d5", "#a6e3a1", "#f38ba8"]
+            codice = d["lisa_sig"].map({c: i for i, c in enumerate(cat)}).fillna(0)
+            kwargs = dict(
+                z=codice, zmin=0, zmax=len(cat),
+                colorscale=_colorscale_discreta(colori), showscale=False,
+            )
+        else:
+            col = {"bisogno": "bisogno", "vulnerabilita": "vulnerabilita",
+                   "dotazione": col_tipo}[vista]
+            z = d[col].astype(float)
+            kwargs = dict(
+                z=z, zmin=0, zmax=float(np.nanpercentile(z, 99)) or 1.0,
+                colorscale="Viridis",
+                colorbar=dict(title=dict(text=vista, font=dict(color="#cdd6f4")),
+                              tickfont=dict(color="#cdd6f4")),
+            )
+
+        fig = go.Figure(_ChoroplethMap(
+            geojson=geojson,
+            locations=d["SEZ21_ID"],
+            marker_line_width=0,
+            marker_opacity=0.82,
+            customdata=custom,
+            hovertemplate=hover,
+            **kwargs,
+        ))
+        fig.update_layout(
+            **{_MAP_KEY: dict(style="carto-darkmatter",
+                              center=dict(lat=41.9, lon=12.5), zoom=9.7)},
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="#181825",
+            uirevision="equita",
+        )
+        return fig
+
+    @app.callback(
+        Output("equita-indici", "children"),
+        Output("equita-lorenz", "figure"),
+        Input("equita-tipo", "value"),
+    )
+    def aggiorna_indici(col_tipo):
+        col_tipo = col_tipo if col_tipo in dfe.columns else "dot_totale"
+        pop = dfe["pop_totale"].to_numpy(dtype=float)
+        dot = dfe[col_tipo].to_numpy(dtype=float)
+        bis = dfe["bisogno"].to_numpy(dtype=float)
+
+        g = gini(dot, pop)
+        ci = concentration_index(dot, bis, pop)
+        n_prio = int(dfe["equity_priority"].sum())
+        pop_prio = int(dfe.loc[dfe["equity_priority"], "pop_totale"].sum())
+
+        stile_val = {"color": "#cdd6f4", "fontSize": "22px", "fontWeight": "700"}
+        stile_lab = {"color": "#6c7086", "fontSize": "11px"}
+        colore_ci = "#f38ba8" if ci < 0 else "#a6e3a1"
+        pannello = [
+            html.P("Indici sugli elementi filtrati", style=STILE_TITOLO_CARD),
+            html.Div([
+                html.Div(f"{ci:+.3f}", style={**stile_val, "color": colore_ci}),
+                html.Div("concentration index "
+                         + ("(pro-avvantaggiati)" if ci < 0 else "(pro-bisogno)"),
+                         style=stile_lab),
+            ], style={"marginBottom": "10px"}),
+            html.Div([
+                html.Div(f"{g:.3f}", style=stile_val),
+                html.Div("Gini dotazione pro-capite", style=stile_lab),
+            ], style={"marginBottom": "10px"}),
+            html.Div([
+                html.Div(f"{n_prio:,}".replace(",", "."), style=stile_val),
+                html.Div("equity priority zones", style=stile_lab),
+            ], style={"marginBottom": "10px"}),
+            html.Div([
+                html.Div(f"{pop_prio:,}".replace(",", "."), style=stile_val),
+                html.Div("residenti nelle zone prioritarie", style=stile_lab),
+            ]),
+        ]
+
+        curva = curva_lorenz(dot, pop)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
+                                 line=dict(color="#45475a", dash="dash"),
+                                 name="equidistribuzione", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=curva["frac_pop"], y=curva["frac_dotazione"],
+            mode="lines", line=dict(color="#89b4fa", width=2),
+            fill="tonexty", fillcolor="rgba(137,180,250,0.15)",
+            name="Lorenz",
+            hovertemplate="pop: %{x:.0%}<br>dotazione: %{y:.0%}<extra></extra>",
+        ))
+        fig.update_layout(
+            paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+            font=dict(color="#cdd6f4", size=11),
+            margin=dict(l=40, r=10, t=10, b=30),
+            showlegend=False,
+            xaxis=dict(title="quota popolazione", gridcolor="#313244",
+                       tickformat=".0%"),
+            yaxis=dict(title="quota dotazione", gridcolor="#313244",
+                       tickformat=".0%"),
+        )
+        return pannello, fig
+
+    @app.callback(
+        Output("equita-sensibilita", "children"),
+        Input("tabs-principale", "value"),
+    )
+    def tabella_sensibilita(tab):
+        sens = indici.get("sensibilita", {})
+        if not sens:
+            return html.P("Nessuna analisi di sensibilita' disponibile.",
+                          style={"color": "#6c7086", "fontSize": "12px"})
+        righe = [html.Tr([
+            html.Th("schema pesi", style={"textAlign": "left", "color": "#6c7086",
+                                          "fontSize": "11px"}),
+            html.Th("CI", style={"textAlign": "right", "color": "#6c7086",
+                                 "fontSize": "11px"}),
+        ])]
+        ci_princ = (indici.get("indici", {}).get("dot_totale", {})
+                    .get("concentration_index"))
+        if ci_princ is not None:
+            sens = {"principale": {"concentration_index_dot_totale": ci_princ},
+                    **sens}
+        for nome, v in sens.items():
+            ci = v.get("concentration_index_dot_totale")
+            righe.append(html.Tr([
+                html.Td(nome, style={"color": "#cdd6f4", "fontSize": "12px"}),
+                html.Td(f"{ci:+.3f}",
+                        style={"textAlign": "right", "fontSize": "12px",
+                               "color": "#f38ba8" if ci < 0 else "#a6e3a1"}),
+            ]))
+        return html.Table(righe, style={"width": "100%"})

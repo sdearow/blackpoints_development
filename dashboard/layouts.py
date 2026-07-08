@@ -655,6 +655,8 @@ def costruisci_layout() -> html.Div:
                                         style=tab_style, selected_style=tab_selected),
                                 dcc.Tab(label="Sensitivita' pesi", value="sensitivita",
                                         style=tab_style, selected_style=tab_selected),
+                                dcc.Tab(label="Equita'", value="equita",
+                                        style=tab_style, selected_style=tab_selected),
                                 dcc.Tab(label="Vista decisionale", value="decisionale",
                                         style=tab_style, selected_style=tab_selected),
                             ],
@@ -678,4 +680,130 @@ def costruisci_layout() -> html.Div:
         ],
         style={"fontFamily": "'Inter', 'Segoe UI', sans-serif",
                "backgroundColor": "#181825", "minHeight": "100vh"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tab Equita' (Modulo B del PSS)
+# ---------------------------------------------------------------------------
+
+# Palette bivariata 3x3 (Stevens purple-blue): righe = bisogno (1=basso,
+# 3=alto), colonne = dotazione (1=bassa, 3=alta). "3-1" = alto bisogno e
+# bassa dotazione -> il mismatch da evidenziare.
+COLORI_BIVARIATA = {
+    "1-1": "#e8e8e8", "1-2": "#ace4e4", "1-3": "#5ac8c8",
+    "2-1": "#dfb0d6", "2-2": "#a5add3", "2-3": "#5698b9",
+    "3-1": "#be64ac", "3-2": "#8c62aa", "3-3": "#3b4994",
+}
+
+
+def _legenda_bivariata() -> html.Div:
+    """Griglia 3x3 della choropleth bivariata (bisogno x dotazione)."""
+    righe = []
+    for b in (3, 2, 1):  # bisogno alto in alto
+        celle = []
+        for d in (1, 2, 3):
+            celle.append(html.Div(style={
+                "width": "22px", "height": "22px",
+                "backgroundColor": COLORI_BIVARIATA[f"{b}-{d}"],
+                "outline": "2px solid #f38ba8" if (b, d) == (3, 1) else "none",
+            }))
+        righe.append(html.Div(celle, style={"display": "flex", "gap": "2px",
+                                            "marginBottom": "2px"}))
+    return html.Div(
+        [
+            html.Div(righe),
+            html.Div("dotazione →", style={"color": "#6c7086", "fontSize": "10px"}),
+            html.Div("↑ bisogno", style={"color": "#6c7086", "fontSize": "10px"}),
+            html.Div("bordo rosa = zona prioritaria (3-1)",
+                     style={"color": "#f38ba8", "fontSize": "10px",
+                            "marginTop": "4px"}),
+        ]
+    )
+
+
+def tab_equita() -> html.Div:
+    pannello_controlli = html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Vista mappa", style=STILE_TITOLO_CARD),
+                    dcc.RadioItems(
+                        id="equita-vista",
+                        options=[
+                            {"label": " Bivariata bisogno x dotazione", "value": "bivariata"},
+                            {"label": " Bisogno", "value": "bisogno"},
+                            {"label": " Vulnerabilita' sociale", "value": "vulnerabilita"},
+                            {"label": " Dotazione interventi", "value": "dotazione"},
+                            {"label": " Equity priority zones", "value": "priority"},
+                            {"label": " Cluster LISA", "value": "lisa"},
+                        ],
+                        value="bivariata",
+                        labelStyle={"display": "block", "color": "#cdd6f4", "fontSize": "13px"},
+                        inputStyle={"marginRight": "6px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Tipologia interventi", style=STILE_TITOLO_CARD),
+                    dcc.Dropdown(
+                        id="equita-tipo",
+                        options=[],   # popolato dal callback
+                        value="dot_totale",
+                        clearable=False,
+                        style={"fontSize": "12px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Legenda bivariata", style=STILE_TITOLO_CARD),
+                    _legenda_bivariata(),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(id="equita-indici", style=STILE_CARD),
+        ],
+        style={"width": "250px", "flexShrink": "0"},
+    )
+
+    pannello_grafici = html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Curva di Lorenz della dotazione", style=STILE_TITOLO_CARD),
+                    dcc.Graph(id="equita-lorenz", style={"height": "260px"},
+                              config={"displayModeBar": False}),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Sensibilita' (concentration index per schema di pesi)",
+                           style=STILE_TITOLO_CARD),
+                    html.Div(id="equita-sensibilita"),
+                ],
+                style=STILE_CARD,
+            ),
+        ],
+        style={"width": "320px", "flexShrink": "0"},
+    )
+
+    return html.Div(
+        [
+            pannello_controlli,
+            html.Div(
+                dcc.Graph(
+                    id="equita-mappa",
+                    style={"height": "calc(100vh - 100px)"},
+                    config={"scrollZoom": True},
+                ),
+                style={"flexGrow": "1"},
+            ),
+            pannello_grafici,
+        ],
+        style={"display": "flex", "gap": "12px", "padding": "12px"},
     )
