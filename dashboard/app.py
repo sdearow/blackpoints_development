@@ -141,6 +141,22 @@ def _carica_equita(processed_dir: Path) -> dict | None:
     return {"df": df, "geojson": geojson, "indici": indici}
 
 
+def _carica_scenari(processed_dir: Path) -> dict | None:
+    """Carica gli scenari MCLP pre-calcolati (s09), se disponibili."""
+    import json
+
+    parquet = processed_dir / "scenari.parquet"
+    indici_path = processed_dir / "scenari_indici.json"
+    if not parquet.exists() or not indici_path.exists():
+        log.info("Scenari non trovati: tab Scenari disabilitata.")
+        return None
+    scelte = pd.read_parquet(parquet)
+    indici = json.loads(indici_path.read_text())
+    log.info("Scenari: %d scelte su %d punti della frontiera",
+             len(scelte), len(indici.get("frontiera", [])))
+    return {"scelte": scelte, "indici": indici}
+
+
 def crea_app(gpkg_path: Path | None = None) -> Dash:
     """Crea e configura l'applicazione Dash."""
     from dashboard.callbacks import registra_callbacks
@@ -151,6 +167,7 @@ def crea_app(gpkg_path: Path | None = None) -> Dash:
 
     df = _carica_dati(gpkg_path)
     equita = _carica_equita(gpkg_path.parent)
+    scenari = _carica_scenari(gpkg_path.parent)
 
     app = Dash(
         __name__,
@@ -158,7 +175,7 @@ def crea_app(gpkg_path: Path | None = None) -> Dash:
         suppress_callback_exceptions=True,
     )
     app.layout = costruisci_layout()
-    registra_callbacks(app, df, equita=equita)
+    registra_callbacks(app, df, equita=equita, scenari=scenari)
     return app
 
 

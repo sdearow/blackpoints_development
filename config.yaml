@@ -90,6 +90,8 @@ paths:
     nkde: "data/processed/nkde.gpkg"
     equita: "data/processed/equita.gpkg"
     equita_indici: "data/processed/equita_indici.json"
+    scenari: "data/processed/scenari.parquet"
+    scenari_indici: "data/processed/scenari_indici.json"
 
 # ---------------------------------------------------------------------------
 # Fase 1 - Matching spaziale incidenti <-> rete
@@ -341,6 +343,28 @@ equita:
   # LISA bivariata: vicini KNN e soglia di significativita'.
   lisa_k_vicini: 8
   lisa_p_max: 0.05
+
+# ---------------------------------------------------------------------------
+# Modulo C del PSS - Ottimizzazione MCLP rischio + equita' (s09)
+# ---------------------------------------------------------------------------
+ottimizzazione:
+  # Numero di interventi da collocare (p dell'MCLP).
+  budget_default: 20
+  # Raggio di copertura candidato -> punto di domanda (metri).
+  raggio_copertura_m: 500
+  # Candidati = unione di due insiemi (limite computazionale dichiarato):
+  # - rischio: siti con eccesso EB positivo, primi N per excess_EPDO;
+  # - equita': siti nelle equity priority zones, primi M per EB_i
+  #   (senza questi le aree vulnerabili senza storico incidenti
+  #   sarebbero irraggiungibili anche a peso equita' = 1).
+  n_candidati_rischio: 1500
+  n_candidati_equita: 1500
+  # Punti della frontiera di Pareto pre-calcolata (w = 0, 0.1, ..., 1).
+  n_punti_frontiera: 11
+  # "greedy" (veloce, garanzia 1-1/e, quasi-ottimo su istanze spaziali)
+  # oppure "esatto" (ILP CBC con timeout, per istanze ridotte).
+  metodo: "greedy"
+  timeout_s: 120
 
 # ---------------------------------------------------------------------------
 # Correzioni empiriche ai dati sorgente

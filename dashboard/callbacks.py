@@ -117,11 +117,13 @@ def _tabella_ranking(d: pd.DataFrame, icp: pd.Series, n: int = 25) -> Any:
 
 
 def registra_callbacks(
-    app: Any, df: pd.DataFrame, equita: dict | None = None
+    app: Any, df: pd.DataFrame,
+    equita: dict | None = None,
+    scenari: dict | None = None,
 ) -> None:
     from dashboard.layouts import (tab_mappa, tab_spf, tab_eb,
                                    tab_sensitivita, tab_decisionale,
-                                   tab_equita)
+                                   tab_equita, tab_scenari)
 
     # ==================================================================
     # Callback 1: switch tab
@@ -146,10 +148,18 @@ def registra_callbacks(
                     "(s0c censimento, s0d interventi, s08 equita)."
                 )
             return tab_equita()
+        if valore == "scenari":
+            if scenari is None:
+                return _msg_placeholder(
+                    "Scenari non trovati: eseguire prima s09_ottimizzazione."
+                )
+            return tab_scenari()
         return tab_decisionale()
 
     if equita is not None:
         _registra_callbacks_equita(app, equita)
+    if scenari is not None:
+        _registra_callbacks_scenari(app, scenari)
 
     # ==================================================================
     # Callback 1b: aggiorna store pesi dagli slider
@@ -1075,3 +1085,142 @@ def _registra_callbacks_equita(app: Any, equita: dict) -> None:
                                "color": "#f38ba8" if ci < 0 else "#a6e3a1"}),
             ]))
         return html.Table(righe, style={"width": "100%"})
+
+
+# =====================================================================
+# Tab Scenari / Ottimizzazione (Modulo C del PSS)
+# =====================================================================
+
+
+def _registra_callbacks_scenari(app: Any, scenari: dict) -> None:
+    """Callback della tab Scenari. Nessuna ottimizzazione nei callback:
+    lo slider seleziona uno degli scenari pre-calcolati da s09."""
+    from dash import html
+
+    scelte: pd.DataFrame = scenari["scelte"]
+    indici = scenari["indici"]
+    frontiera = pd.DataFrame(indici.get("frontiera", []))
+    pesi_disponibili = sorted(scelte["peso_equita"].unique())
+
+    def _scenario_vicino(w: float) -> float:
+        return min(pesi_disponibili, key=lambda p: abs(p - float(w or 0)))
+
+    @app.callback(
+        Output("scenari-mappa", "figure"),
+        Output("scenari-riepilogo", "children"),
+        Output("scenari-pareto", "figure"),
+        Output("scenari-tabella", "children"),
+        Input("scenari-peso", "value"),
+    )
+    def aggiorna_scenario(w):
+        w_sel = _scenario_vicino(w)
+        sel = scelte[scelte["peso_equita"] == w_sel].sort_values("ordine")
+        punto = frontiera[frontiera["peso_equita"] == w_sel].iloc[0]
+
+        # --- Mappa: siti proposti ------------------------------------
+        colori_tipo = {"segmento": "#89b4fa", "intersezione": "#fab387"}
+        fig = go.Figure()
+        for tipo, d in sel.groupby("tipo_sito"):
+            fig.add_trace(_ScatterMap(
+                lat=d["lat"], lon=d["lon"],
+                mode="markers+text",
+                marker=dict(size=16, color=colori_tipo.get(tipo, "#f38ba8")),
+                text=d["ordine"].astype(str),
+                textfont=dict(size=9, color="#11111b"),
+                name=tipo,
+                customdata=np.stack(
+                    [d["toponimo"].fillna(""), d["excess_EPDO_i"].round(1)],
+                    axis=-1),
+                hovertemplate=("<b>#%{text}</b> %{customdata[0]}<br>"
+                               "eccesso EPDO: %{customdata[1]}"
+                               "<extra></extra>"),
+            ))
+        fig.update_layout(
+            **{_MAP_KEY: dict(style="carto-darkmatter",
+                              center=dict(lat=41.9, lon=12.5), zoom=10)},
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="#181825",
+            legend=dict(font=dict(color=_TESTO), bgcolor="#1e1e2e",
+                        x=0.01, y=0.99),
+            uirevision="scenari",
+        )
+
+        # --- Riepilogo -------------------------------------------------
+        stile_val = {"color": "#cdd6f4", "fontSize": "20px", "fontWeight": "700"}
+        stile_lab = {"color": "#6c7086", "fontSize": "11px"}
+        riepilogo = [
+            html.P(f"Scenario w = {w_sel:g}", style=STILE_TITOLO_CARD_LOCAL),
+            html.Div([
+                html.Div(f"{punto['pct_rischio_coperto']:.1f}%", style=stile_val),
+                html.Div("rischio (excess EPDO) coperto", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(f"{punto['pct_vulnerabilita_coperta']:.1f}%", style=stile_val),
+                html.Div("vulnerabilita' sociale coperta", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(f"{int(punto['pop_coperta']):,}".replace(",", "."),
+                         style=stile_val),
+                html.Div("residenti entro il raggio", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(f"{int(punto['n_scelti'])} / budget {indici.get('budget')}",
+                         style=stile_val),
+                html.Div(f"interventi (raggio {indici.get('raggio_copertura_m'):g} m, "
+                         f"metodo {punto['metodo']})", style=stile_lab),
+            ]),
+        ]
+
+        # --- Frontiera di Pareto ---------------------------------------
+        fig_p = go.Figure()
+        fig_p.add_trace(go.Scatter(
+            x=frontiera["pct_rischio_coperto"],
+            y=frontiera["pct_vulnerabilita_coperta"],
+            mode="lines+markers",
+            line=dict(color="#89b4fa"),
+            marker=dict(size=7, color="#89b4fa"),
+            customdata=frontiera["peso_equita"],
+            hovertemplate=("w=%{customdata}<br>rischio %{x:.1f}%<br>"
+                           "vulnerabilita' %{y:.1f}%<extra></extra>"),
+        ))
+        fig_p.add_trace(go.Scatter(
+            x=[punto["pct_rischio_coperto"]],
+            y=[punto["pct_vulnerabilita_coperta"]],
+            mode="markers",
+            marker=dict(size=14, color="#f38ba8",
+                        line=dict(width=2, color="#cdd6f4")),
+            hoverinfo="skip",
+        ))
+        fig_p.update_layout(
+            paper_bgcolor=_SFONDO, plot_bgcolor=_SFONDO,
+            font=dict(color=_TESTO, size=11),
+            margin=dict(l=45, r=10, t=10, b=35),
+            showlegend=False,
+            xaxis=dict(title="% rischio coperto", gridcolor=_GRIGLIA),
+            yaxis=dict(title="% vulnerabilita' coperta", gridcolor=_GRIGLIA),
+        )
+
+        # --- Tabella siti ----------------------------------------------
+        dd = sel[["ordine", "tipo_sito", "toponimo", "excess_EPDO_i"]].copy()
+        dd.columns = ["#", "Tipo", "Sito", "Ecc. EPDO"]
+        dd["Ecc. EPDO"] = dd["Ecc. EPDO"].round(1)
+        tabella = dash_table.DataTable(
+            data=dd.to_dict("records"),
+            columns=[{"name": c, "id": c} for c in dd.columns],
+            page_size=10,
+            style_header={"backgroundColor": "#313244", "color": _TESTO,
+                          "fontWeight": "600", "fontSize": "11px",
+                          "border": "none"},
+            style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
+                        "fontSize": "11px", "border": f"1px solid {_GRIGLIA}",
+                        "padding": "4px 8px", "maxWidth": "180px",
+                        "overflow": "hidden", "textOverflow": "ellipsis"},
+        )
+        return fig, riepilogo, fig_p, tabella
+
+
+STILE_TITOLO_CARD_LOCAL = {
+    "color": "#cdd6f4", "fontSize": "13px", "fontWeight": "600",
+    "textTransform": "uppercase", "letterSpacing": "0.05em",
+    "marginBottom": "10px",
+}

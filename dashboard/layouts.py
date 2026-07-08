@@ -657,6 +657,8 @@ def costruisci_layout() -> html.Div:
                                         style=tab_style, selected_style=tab_selected),
                                 dcc.Tab(label="Equita'", value="equita",
                                         style=tab_style, selected_style=tab_selected),
+                                dcc.Tab(label="Scenari", value="scenari",
+                                        style=tab_style, selected_style=tab_selected),
                                 dcc.Tab(label="Vista decisionale", value="decisionale",
                                         style=tab_style, selected_style=tab_selected),
                             ],
@@ -798,6 +800,86 @@ def tab_equita() -> html.Div:
             html.Div(
                 dcc.Graph(
                     id="equita-mappa",
+                    style={"height": "calc(100vh - 100px)"},
+                    config={"scrollZoom": True},
+                ),
+                style={"flexGrow": "1"},
+            ),
+            pannello_grafici,
+        ],
+        style={"display": "flex", "gap": "12px", "padding": "12px"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tab Scenari / Ottimizzazione (Modulo C del PSS)
+# ---------------------------------------------------------------------------
+
+
+def tab_scenari() -> html.Div:
+    pannello_controlli = html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Peso equita'", style=STILE_TITOLO_CARD),
+                    html.Div("efficienza  <->  equita'",
+                             style={"color": "#6c7086", "fontSize": "11px",
+                                    "marginBottom": "6px"}),
+                    dcc.Slider(
+                        id="scenari-peso",
+                        min=0.0, max=1.0, step=0.1, value=0.5,
+                        marks={0: "0", 0.5: "0.5", 1: "1"},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(id="scenari-riepilogo", style=STILE_CARD),
+            html.Div(
+                [
+                    html.P("Come leggere", style=STILE_TITOLO_CARD),
+                    html.P(
+                        "Ogni scenario propone le localizzazioni ottime "
+                        "(MCLP) per il budget configurato. Lo slider sposta "
+                        "il peso della domanda dal rischio (excess EPDO) "
+                        "alla vulnerabilita' sociale. Gli scenari sono "
+                        "pre-calcolati dalla pipeline (s09).",
+                        style={"color": "#6c7086", "fontSize": "11px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+        ],
+        style={"width": "250px", "flexShrink": "0"},
+    )
+
+    pannello_grafici = html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Frontiera efficienza-equita'", style=STILE_TITOLO_CARD),
+                    dcc.Graph(id="scenari-pareto", style={"height": "300px"},
+                              config={"displayModeBar": False}),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Siti proposti", style=STILE_TITOLO_CARD),
+                    html.Div(id="scenari-tabella"),
+                ],
+                style=STILE_CARD,
+            ),
+        ],
+        style={"width": "360px", "flexShrink": "0"},
+    )
+
+    return html.Div(
+        [
+            pannello_controlli,
+            html.Div(
+                dcc.Graph(
+                    id="scenari-mappa",
                     style={"height": "calc(100vh - 100px)"},
                     config={"scrollZoom": True},
                 ),
