@@ -120,10 +120,12 @@ def registra_callbacks(
     app: Any, df: pd.DataFrame,
     equita: dict | None = None,
     scenari: dict | None = None,
+    valutazioni: pd.DataFrame | None = None,
 ) -> None:
     from dashboard.layouts import (tab_mappa, tab_spf, tab_eb,
                                    tab_sensitivita, tab_decisionale,
-                                   tab_equita, tab_scenari)
+                                   tab_equita, tab_scenari,
+                                   tab_valutazione)
 
     # ==================================================================
     # Callback 1: switch tab
@@ -154,12 +156,20 @@ def registra_callbacks(
                     "Scenari non trovati: eseguire prima s09_ottimizzazione."
                 )
             return tab_scenari()
+        if valore == "valutazione":
+            if valutazioni is None:
+                return _msg_placeholder(
+                    "Valutazioni non trovate: eseguire prima s10_valutazione."
+                )
+            return tab_valutazione()
         return tab_decisionale()
 
     if equita is not None:
         _registra_callbacks_equita(app, equita)
     if scenari is not None:
         _registra_callbacks_scenari(app, scenari)
+    if valutazioni is not None:
+        _registra_callbacks_valutazione(app, valutazioni)
 
     # ==================================================================
     # Callback 1b: aggiorna store pesi dagli slider
@@ -1224,3 +1234,170 @@ STILE_TITOLO_CARD_LOCAL = {
     "textTransform": "uppercase", "letterSpacing": "0.05em",
     "marginBottom": "10px",
 }
+
+
+# =====================================================================
+# Tab Valutazione before-after (Modulo D del PSS)
+# =====================================================================
+
+_COLORI_STATO_VAL = {
+    "riduzione": "#a6e3a1",       # theta < 1: l'intervento funziona
+    "aumento": "#f38ba8",         # theta >= 1
+    "in_attesa": "#f9e2af",       # non valutabile: dati/date insufficienti
+    "nessun_sito": "#585b70",     # fuori rete analizzata
+}
+
+
+def _registra_callbacks_valutazione(app: Any, val: pd.DataFrame) -> None:
+    """Callback della tab Valutazione. Tutto pre-calcolato da s10:
+    qui solo filtri e rendering. Con le date segnaposto gli interventi
+    sono 'in attesa'; si accendono da soli con le date reali."""
+    from dash import html
+
+    val = val.copy()
+
+    def _stato(r) -> str:
+        if r["valutabile"]:
+            return "riduzione" if r["theta"] < 1.0 else "aumento"
+        if r["motivo"] == "nessun_sito_trattato":
+            return "nessun_sito"
+        return "in_attesa"
+
+    val["stato"] = val.apply(_stato, axis=1)
+    tipi = sorted(val["tipo"].unique())
+
+    @app.callback(
+        Output("valutazione-tipo", "options"),
+        Input("tabs-principale", "value"),
+    )
+    def popola_tipi_val(tab):
+        return ([{"label": "Tutti i tipi", "value": "tutti"}]
+                + [{"label": t.replace("_", " ").capitalize(), "value": t}
+                   for t in tipi])
+
+    @app.callback(
+        Output("valutazione-mappa", "figure"),
+        Output("valutazione-riepilogo", "children"),
+        Output("valutazione-forest", "figure"),
+        Output("valutazione-tabella", "children"),
+        Input("valutazione-tipo", "value"),
+    )
+    def aggiorna_valutazione(tipo):
+        d = val if (not tipo or tipo == "tutti") else val[val["tipo"] == tipo]
+        d = d.dropna(subset=["lon", "lat"])
+
+        # --- Mappa ------------------------------------------------------
+        etichette = {
+            "riduzione": "riduzione (theta<1)",
+            "aumento": "aumento (theta>=1)",
+            "in_attesa": "in attesa di dati/date",
+            "nessun_sito": "fuori rete analizzata",
+        }
+        fig = go.Figure()
+        for stato in ("nessun_sito", "in_attesa", "aumento", "riduzione"):
+            s = d[d["stato"] == stato]
+            if s.empty:
+                continue
+            theta_txt = s["theta"].map(
+                lambda t: f"{t:.2f}" if pd.notna(t) else "-")
+            fig.add_trace(_ScatterMap(
+                lat=s["lat"], lon=s["lon"],
+                mode="markers",
+                marker=dict(size=9 if stato in ("riduzione", "aumento") else 6,
+                            color=_COLORI_STATO_VAL[stato]),
+                name=etichette[stato],
+                customdata=np.stack(
+                    [s["nome"].fillna(s["id_intervento"]), s["tipo"],
+                     theta_txt, s["motivo"].fillna("valutato")], axis=-1),
+                hovertemplate=("<b>%{customdata[0]}</b><br>"
+                               "%{customdata[1]}<br>"
+                               "theta: %{customdata[2]}<br>"
+                               "stato: %{customdata[3]}<extra></extra>"),
+            ))
+        fig.update_layout(
+            **{_MAP_KEY: dict(style="carto-darkmatter",
+                              center=dict(lat=41.9, lon=12.5), zoom=9.7)},
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="#181825",
+            legend=dict(font=dict(color=_TESTO), bgcolor="#1e1e2e",
+                        x=0.01, y=0.99),
+            uirevision="valutazione",
+        )
+
+        # --- Riepilogo ----------------------------------------------------
+        stile_val = {"color": "#cdd6f4", "fontSize": "20px", "fontWeight": "700"}
+        stile_lab = {"color": "#6c7086", "fontSize": "11px"}
+        n_val = int(d["valutabile"].sum())
+        n_attesa = int((d["stato"] == "in_attesa").sum())
+        riepilogo = [
+            html.P("Stato valutazioni", style=STILE_TITOLO_CARD_LOCAL),
+            html.Div([
+                html.Div(str(n_val), style={**stile_val, "color": "#a6e3a1"}),
+                html.Div("interventi valutati", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(str(n_attesa), style={**stile_val, "color": "#f9e2af"}),
+                html.Div("in attesa di dati/date reali", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+        ]
+        if n_val:
+            theta_med = float(d.loc[d["valutabile"], "theta"].median())
+            riepilogo.append(html.Div([
+                html.Div(f"{theta_med:.2f}", style=stile_val),
+                html.Div("theta mediano (1 = nessun effetto)", style=stile_lab),
+            ]))
+
+        # --- Forest plot ---------------------------------------------------
+        v = d[d["valutabile"]].sort_values("theta").head(30)
+        if v.empty:
+            fig_f = _figura_vuota(
+                "Nessun intervento ancora valutabile:\nservono le date reali "
+                "di attivazione e almeno 12 mesi di dati nel 'dopo'."
+            )
+        else:
+            nomi = v["nome"].fillna(v["id_intervento"]).str.slice(0, 28)
+            fig_f = go.Figure()
+            fig_f.add_vline(x=1.0, line=dict(color="#6c7086", dash="dash"))
+            fig_f.add_trace(go.Scatter(
+                x=v["theta"], y=nomi,
+                error_x=dict(
+                    type="data", symmetric=False,
+                    array=(v["ic_high"] - v["theta"]),
+                    arrayminus=(v["theta"] - v["ic_low"]),
+                    color="#6c7086",
+                ),
+                mode="markers",
+                marker=dict(size=8, color=np.where(v["theta"] < 1,
+                                                   "#a6e3a1", "#f38ba8")),
+                hovertemplate=("theta=%{x:.2f}<extra></extra>"),
+            ))
+            fig_f.update_layout(
+                paper_bgcolor=_SFONDO, plot_bgcolor=_SFONDO,
+                font=dict(color=_TESTO, size=10),
+                margin=dict(l=10, r=10, t=10, b=30),
+                xaxis=dict(title="theta (CMF)", gridcolor=_GRIGLIA),
+                yaxis=dict(gridcolor=_GRIGLIA, automargin=True),
+                showlegend=False,
+            )
+
+        # --- Tabella --------------------------------------------------------
+        cols_show = ["id_intervento", "tipo", "fase", "stato", "n_siti",
+                     "O_pre", "O_post", "theta"]
+        dd = d[cols_show].copy()
+        dd["theta"] = dd["theta"].round(2)
+        # Prima i valutati (theta presente), poi gli altri.
+        dd = dd.sort_values("theta", na_position="last")
+        tabella = dash_table.DataTable(
+            data=dd.head(200).to_dict("records"),
+            columns=[{"name": c, "id": c} for c in cols_show],
+            page_size=12,
+            sort_action="native",
+            style_header={"backgroundColor": "#313244", "color": _TESTO,
+                          "fontWeight": "600", "fontSize": "11px",
+                          "border": "none"},
+            style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
+                        "fontSize": "11px", "border": f"1px solid {_GRIGLIA}",
+                        "padding": "4px 8px", "maxWidth": "160px",
+                        "overflow": "hidden", "textOverflow": "ellipsis"},
+        )
+        return fig, riepilogo, fig_f, tabella

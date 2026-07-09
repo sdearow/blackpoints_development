@@ -659,6 +659,8 @@ def costruisci_layout() -> html.Div:
                                         style=tab_style, selected_style=tab_selected),
                                 dcc.Tab(label="Scenari", value="scenari",
                                         style=tab_style, selected_style=tab_selected),
+                                dcc.Tab(label="Valutazione", value="valutazione",
+                                        style=tab_style, selected_style=tab_selected),
                                 dcc.Tab(label="Vista decisionale", value="decisionale",
                                         style=tab_style, selected_style=tab_selected),
                             ],
@@ -880,6 +882,87 @@ def tab_scenari() -> html.Div:
             html.Div(
                 dcc.Graph(
                     id="scenari-mappa",
+                    style={"height": "calc(100vh - 100px)"},
+                    config={"scrollZoom": True},
+                ),
+                style={"flexGrow": "1"},
+            ),
+            pannello_grafici,
+        ],
+        style={"display": "flex", "gap": "12px", "padding": "12px"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tab Valutazione before-after (Modulo D del PSS)
+# ---------------------------------------------------------------------------
+
+
+def tab_valutazione() -> html.Div:
+    pannello_controlli = html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Tipologia", style=STILE_TITOLO_CARD),
+                    dcc.Dropdown(
+                        id="valutazione-tipo",
+                        options=[],   # popolato dal callback
+                        value="tutti",
+                        clearable=False,
+                        style={"fontSize": "12px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(id="valutazione-riepilogo", style=STILE_CARD),
+            html.Div(
+                [
+                    html.P("Come leggere", style=STILE_TITOLO_CARD),
+                    html.P(
+                        "theta e' l'indice di efficacia Empirical Bayes "
+                        "(Hauer): theta = 0.75 significa -25% di incidenti "
+                        "rispetto al controfattuale 'senza intervento'. "
+                        "Gli interventi con data segnaposto o con dati "
+                        "insufficienti nel dopo restano 'in attesa' e si "
+                        "valutano da soli quando le date reali arrivano "
+                        "nel CSV di override.",
+                        style={"color": "#6c7086", "fontSize": "11px"},
+                    ),
+                ],
+                style=STILE_CARD,
+            ),
+        ],
+        style={"width": "250px", "flexShrink": "0"},
+    )
+
+    pannello_grafici = html.Div(
+        [
+            html.Div(
+                [
+                    html.P("Efficacia per intervento (theta, IC 95%)",
+                           style=STILE_TITOLO_CARD),
+                    dcc.Graph(id="valutazione-forest", style={"height": "340px"},
+                              config={"displayModeBar": False}),
+                ],
+                style=STILE_CARD,
+            ),
+            html.Div(
+                [
+                    html.P("Dettaglio valutazioni", style=STILE_TITOLO_CARD),
+                    html.Div(id="valutazione-tabella"),
+                ],
+                style=STILE_CARD,
+            ),
+        ],
+        style={"width": "380px", "flexShrink": "0"},
+    )
+
+    return html.Div(
+        [
+            pannello_controlli,
+            html.Div(
+                dcc.Graph(
+                    id="valutazione-mappa",
                     style={"height": "calc(100vh - 100px)"},
                     config={"scrollZoom": True},
                 ),

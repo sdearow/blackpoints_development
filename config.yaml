@@ -92,6 +92,7 @@ paths:
     equita_indici: "data/processed/equita_indici.json"
     scenari: "data/processed/scenari.parquet"
     scenari_indici: "data/processed/scenari_indici.json"
+    valutazioni: "data/processed/valutazioni.parquet"
 
 # ---------------------------------------------------------------------------
 # Fase 1 - Matching spaziale incidenti <-> rete
@@ -365,6 +366,21 @@ ottimizzazione:
   # oppure "esatto" (ILP CBC con timeout, per istanze ridotte).
   metodo: "greedy"
   timeout_s: 120
+
+# ---------------------------------------------------------------------------
+# Modulo D del PSS - Valutazione before-after (s10)
+# ---------------------------------------------------------------------------
+before_after:
+  # Ampiezza delle finestre attorno alla data di attivazione (anni).
+  n_anni_pre: 3
+  n_anni_post: 2
+  # Dati minimi perche' un intervento sia valutabile (mesi effettivi
+  # dopo il troncamento sulla disponibilita' degli incidenti).
+  # Con le date segnaposto 2025-01-01 il "dopo" non raggiunge la soglia
+  # -> valutabile=False, motivo=post_insufficiente. Quando le date reali
+  # arrivano nel CSV di override (s0d) la valutazione parte da sola.
+  mesi_minimi_pre: 24
+  mesi_minimi_post: 12
 
 # ---------------------------------------------------------------------------
 # Correzioni empiriche ai dati sorgente

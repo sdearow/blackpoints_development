@@ -41,6 +41,10 @@ esegui_equita() {
         echo ">>> Esecuzione: src.s09_ottimizzazione"
         echo "=========================================="
         python -m src.s09_ottimizzazione
+        echo "=========================================="
+        echo ">>> Esecuzione: src.s10_valutazione"
+        echo "=========================================="
+        python -m src.s10_valutazione
     fi
 }
 

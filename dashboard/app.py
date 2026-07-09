@@ -157,6 +157,18 @@ def _carica_scenari(processed_dir: Path) -> dict | None:
     return {"scelte": scelte, "indici": indici}
 
 
+def _carica_valutazioni(processed_dir: Path) -> pd.DataFrame | None:
+    """Carica le valutazioni before-after (s10), se disponibili."""
+    parquet = processed_dir / "valutazioni.parquet"
+    if not parquet.exists():
+        log.info("Valutazioni non trovate: tab Valutazione disabilitata.")
+        return None
+    val = pd.read_parquet(parquet)
+    log.info("Valutazioni: %d interventi (%d valutabili)",
+             len(val), int(val["valutabile"].sum()))
+    return val
+
+
 def crea_app(gpkg_path: Path | None = None) -> Dash:
     """Crea e configura l'applicazione Dash."""
     from dashboard.callbacks import registra_callbacks
@@ -168,6 +180,7 @@ def crea_app(gpkg_path: Path | None = None) -> Dash:
     df = _carica_dati(gpkg_path)
     equita = _carica_equita(gpkg_path.parent)
     scenari = _carica_scenari(gpkg_path.parent)
+    valutazioni = _carica_valutazioni(gpkg_path.parent)
 
     app = Dash(
         __name__,
@@ -175,7 +188,8 @@ def crea_app(gpkg_path: Path | None = None) -> Dash:
         suppress_callback_exceptions=True,
     )
     app.layout = costruisci_layout()
-    registra_callbacks(app, df, equita=equita, scenari=scenari)
+    registra_callbacks(app, df, equita=equita, scenari=scenari,
+                       valutazioni=valutazioni)
     return app
 
 
