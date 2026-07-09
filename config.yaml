@@ -341,6 +341,12 @@ equita:
   # Tipologie considerate nella dotazione (null = tutte). La scelta resta
   # esplorabile in dashboard filtrando per tipo.
   tipi_dotazione: null
+  # Fasi considerate nella dotazione (null = tutte). ATTENZIONE: finche'
+  # e' null la dotazione fotografa il database progetti (realizzato +
+  # pianificato + scenario), non il costruito. Quando le fasi saranno
+  # consolidate, impostare ad es. ["realizzato"] o
+  # ["realizzato", "in_corso"].
+  fasi_dotazione: null
   # LISA bivariata: vicini KNN e soglia di significativita'.
   lisa_k_vicini: 8
   lisa_p_max: 0.05

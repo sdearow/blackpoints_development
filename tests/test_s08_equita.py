@@ -115,6 +115,23 @@ class TestDotazione:
         dot = calcola_dotazione(sezioni, interventi)
         assert dot["dot_totale"].tolist() == [1.0, 0.0, 0.0]
 
+    def test_filtro_fasi(self, sezioni):
+        interventi = gpd.GeoDataFrame(
+            {
+                "tipo": ["velox", "velox"],
+                "fase": ["realizzato", "pianificato"],
+                "raggio_influenza_m": [400.0, 400.0],
+                "geometry": [Point(500, 500), Point(400, 400)],
+            },
+            crs=CRS,
+        )
+        # Senza filtro: entrambi contano.
+        dot_tutti = calcola_dotazione(sezioni, interventi)
+        assert dot_tutti["dot_totale"].iloc[0] == 2.0
+        # Solo realizzato: uno.
+        dot_real = calcola_dotazione(sezioni, interventi, fasi=["realizzato"])
+        assert dot_real["dot_totale"].iloc[0] == 1.0
+
     def test_filtro_tipi(self, sezioni):
         interventi = gpd.GeoDataFrame(
             {
