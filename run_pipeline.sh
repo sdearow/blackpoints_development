@@ -28,14 +28,23 @@ if [[ -d "data/raw/progetti" ]]; then
     python -m src.s0d_interventi
 fi
 
-# Il modulo Equita' (s08) gira dopo la pipeline principale: dipende da
-# censimento (s0c), interventi (s0d) e priorita_finale (s05/s07).
+# I moduli PSS (s08 equita', s09 ottimizzazione) girano dopo la pipeline
+# principale: dipendono da censimento (s0c), interventi (s0d) e
+# priorita_finale (s05/s07).
 esegui_equita() {
     if [[ -f "data/interim/censimento_prep.gpkg" && -f "data/interim/interventi_prep.gpkg" ]]; then
         echo "=========================================="
         echo ">>> Esecuzione: src.s08_equita"
         echo "=========================================="
         python -m src.s08_equita
+        echo "=========================================="
+        echo ">>> Esecuzione: src.s09_ottimizzazione"
+        echo "=========================================="
+        python -m src.s09_ottimizzazione
+        echo "=========================================="
+        echo ">>> Esecuzione: src.s10_valutazione"
+        echo "=========================================="
+        python -m src.s10_valutazione
     fi
 }
 

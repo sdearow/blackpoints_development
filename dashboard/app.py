@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import geopandas as gpd
@@ -21,6 +22,12 @@ from dash import Dash
 log = logging.getLogger("dashboard")
 
 _RADICE = Path(__file__).resolve().parent.parent
+
+# Permette il lancio diretto `python dashboard/app.py` (oltre a
+# `python -m dashboard.app`): la radice del repo deve stare in sys.path
+# per gli import `dashboard.*` e `src.*`.
+if str(_RADICE) not in sys.path:
+    sys.path.insert(0, str(_RADICE))
 
 
 def _extract_line_coords(geom) -> list[tuple[float, float]]:
@@ -102,6 +109,66 @@ def _carica_dati(gpkg_path: Path) -> pd.DataFrame:
     return df
 
 
+def _carica_equita(processed_dir: Path) -> dict | None:
+    """Carica i dati del modulo Equita' (s08) se disponibili.
+
+    Ritorna ``{"df": ..., "geojson": ..., "indici": ...}`` con le sole
+    sezioni abitate, geometrie semplificate (~25 m) in WGS84 pronte per
+    la choropleth, oppure None se s08 non e' stato eseguito.
+    """
+    import json
+
+    gpkg = processed_dir / "equita.gpkg"
+    if not gpkg.exists():
+        log.info("equita.gpkg non trovato: tab Equita' disabilitata.")
+        return None
+
+    gdf = gpd.read_file(gpkg, layer="sezioni")
+    gdf = gdf[~gdf["pop_zero"].astype(bool)].copy()
+    gdf["SEZ21_ID"] = gdf["SEZ21_ID"].astype("int64")
+    gdf = gdf.set_index("SEZ21_ID", drop=False)
+
+    # Geometrie semplificate per il rendering (25 m nel CRS metrico).
+    gdf["geometry"] = gdf.geometry.simplify(25)
+    gdf_wgs = gdf.to_crs("EPSG:4326")
+    geojson = json.loads(gdf_wgs[["geometry"]].to_json())
+
+    indici_path = processed_dir / "equita_indici.json"
+    indici = json.loads(indici_path.read_text()) if indici_path.exists() else {}
+
+    df = pd.DataFrame(gdf.drop(columns="geometry"))
+    log.info("Equita': %d sezioni abitate caricate", len(df))
+    return {"df": df, "geojson": geojson, "indici": indici}
+
+
+def _carica_scenari(processed_dir: Path) -> dict | None:
+    """Carica gli scenari MCLP pre-calcolati (s09), se disponibili."""
+    import json
+
+    parquet = processed_dir / "scenari.parquet"
+    indici_path = processed_dir / "scenari_indici.json"
+    if not parquet.exists() or not indici_path.exists():
+        log.info("Scenari non trovati: tab Scenari disabilitata.")
+        return None
+    scelte = pd.read_parquet(parquet)
+    indici = json.loads(indici_path.read_text())
+    log.info("Scenari: %d scelte su %d punti della frontiera",
+             len(scelte), len(indici.get("frontiera", [])))
+    return {"scelte": scelte, "indici": indici}
+
+
+def _carica_valutazioni(processed_dir: Path) -> pd.DataFrame | None:
+    """Carica le valutazioni before-after (s10), se disponibili."""
+    parquet = processed_dir / "valutazioni.parquet"
+    if not parquet.exists():
+        log.info("Valutazioni non trovate: tab Valutazione disabilitata.")
+        return None
+    val = pd.read_parquet(parquet)
+    log.info("Valutazioni: %d interventi (%d valutabili)",
+             len(val), int(val["valutabile"].sum()))
+    return val
+
+
 def crea_app(gpkg_path: Path | None = None) -> Dash:
     """Crea e configura l'applicazione Dash."""
     from dashboard.callbacks import registra_callbacks
@@ -111,6 +178,9 @@ def crea_app(gpkg_path: Path | None = None) -> Dash:
         gpkg_path = _RADICE / "data" / "processed" / "priorita_finale.gpkg"
 
     df = _carica_dati(gpkg_path)
+    equita = _carica_equita(gpkg_path.parent)
+    scenari = _carica_scenari(gpkg_path.parent)
+    valutazioni = _carica_valutazioni(gpkg_path.parent)
 
     app = Dash(
         __name__,
@@ -118,7 +188,8 @@ def crea_app(gpkg_path: Path | None = None) -> Dash:
         suppress_callback_exceptions=True,
     )
     app.layout = costruisci_layout()
-    registra_callbacks(app, df)
+    registra_callbacks(app, df, equita=equita, scenari=scenari,
+                       valutazioni=valutazioni)
     return app
 
 

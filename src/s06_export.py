@@ -71,15 +71,34 @@ def esporta_geojson(
     percorso: Path,
     crs_out: str = "EPSG:4326",
 ) -> None:
-    """Esporta un GeoDataFrame in GeoJSON nel CRS di visualizzazione."""
+    """Esporta un GeoDataFrame in GeoJSON nel CRS di visualizzazione.
+
+    Il file e' versionato in git: geometrie forzate a 2D (la Z del dato
+    TomTom e' sempre 0) e coordinate a 6 decimali (~11 cm in WGS84) per
+    contenerne la dimensione sotto la soglia di warning di GitHub.
+    """
+    import shapely
+
     gdf_out = gdf[_colonne_export(gdf)].copy()
     if gdf_out.crs and str(gdf_out.crs) != crs_out:
         gdf_out = gdf_out.to_crs(crs_out)
+    gdf_out["geometry"] = shapely.force_2d(gdf_out.geometry.to_numpy())
     for col in gdf_out.select_dtypes(include=["float64"]).columns:
         gdf_out[col] = gdf_out[col].round(4)
     percorso.parent.mkdir(parents=True, exist_ok=True)
-    gdf_out.to_file(percorso, driver="GeoJSON")
+    gdf_out.to_file(percorso, driver="GeoJSON", COORDINATE_PRECISION=6)
     log.info("GeoJSON: %s (%d record)", percorso, len(gdf_out))
+
+    # Copia compressa: e' quella versionata in git (il GeoJSON piano dei
+    # segmenti supera i 50 MB e fa scattare i warning di GitHub a ogni
+    # push). QGIS/GDAL e geopandas leggono i .geojson.gz direttamente.
+    import gzip
+    import shutil
+
+    percorso_gz = percorso.with_suffix(percorso.suffix + ".gz")
+    with open(percorso, "rb") as f_in, gzip.open(percorso_gz, "wb", compresslevel=9) as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    log.info("GeoJSON compresso: %s", percorso_gz)
 
 
 # =====================================================================

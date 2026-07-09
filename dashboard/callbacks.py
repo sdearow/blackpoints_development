@@ -116,9 +116,16 @@ def _tabella_ranking(d: pd.DataFrame, icp: pd.Series, n: int = 25) -> Any:
     )
 
 
-def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
+def registra_callbacks(
+    app: Any, df: pd.DataFrame,
+    equita: dict | None = None,
+    scenari: dict | None = None,
+    valutazioni: pd.DataFrame | None = None,
+) -> None:
     from dashboard.layouts import (tab_mappa, tab_spf, tab_eb,
-                                   tab_sensitivita, tab_decisionale)
+                                   tab_sensitivita, tab_decisionale,
+                                   tab_equita, tab_scenari,
+                                   tab_valutazione)
 
     # ==================================================================
     # Callback 1: switch tab
@@ -136,7 +143,33 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
             return tab_eb()
         if valore == "sensitivita":
             return tab_sensitivita()
+        if valore == "equita":
+            if equita is None:
+                return _msg_placeholder(
+                    "Dati equita' non trovati: eseguire prima la pipeline "
+                    "(s0c censimento, s0d interventi, s08 equita)."
+                )
+            return tab_equita()
+        if valore == "scenari":
+            if scenari is None:
+                return _msg_placeholder(
+                    "Scenari non trovati: eseguire prima s09_ottimizzazione."
+                )
+            return tab_scenari()
+        if valore == "valutazione":
+            if valutazioni is None:
+                return _msg_placeholder(
+                    "Valutazioni non trovate: eseguire prima s10_valutazione."
+                )
+            return tab_valutazione()
         return tab_decisionale()
+
+    if equita is not None:
+        _registra_callbacks_equita(app, equita)
+    if scenari is not None:
+        _registra_callbacks_scenari(app, scenari)
+    if valutazioni is not None:
+        _registra_callbacks_valutazione(app, valutazioni)
 
     # ==================================================================
     # Callback 1b: aggiorna store pesi dagli slider
@@ -855,3 +888,516 @@ def registra_callbacks(app: Any, df: pd.DataFrame) -> None:
                       traceback.format_exc())
             v = _figura_vuota("Errore")
             return v, v, [], []
+
+
+# =====================================================================
+# Tab Equita' (Modulo B del PSS)
+# =====================================================================
+
+
+def _registra_callbacks_equita(app: Any, equita: dict) -> None:
+    """Callback della tab Equita'. I dati pesanti (geojson semplificato,
+    DataFrame delle sezioni abitate, indici pre-calcolati) arrivano da
+    app._carica_equita; qui si fanno solo filtri e statistiche leggere
+    (Gini/CI: O(n log n) su ~15k sezioni)."""
+    from dashboard.layouts import COLORI_BIVARIATA, STILE_TITOLO_CARD
+    from dash import html
+
+    from src.utils.equity_utils import concentration_index, curva_lorenz, gini
+
+    dfe: pd.DataFrame = equita["df"]
+    geojson = equita["geojson"]
+    indici = equita.get("indici", {})
+
+    col_dot = sorted(c for c in dfe.columns if c.startswith("dot_"))
+    _ChoroplethMap = (getattr(go, "Choroplethmap", None)
+                      or getattr(go, "Choroplethmapbox", None))
+
+    def _etichetta_tipo(col: str) -> str:
+        return ("Tutti i tipi" if col == "dot_totale"
+                else col.removeprefix("dot_").replace("_", " ").capitalize())
+
+    def _colorscale_discreta(colori: list[str]) -> list[list]:
+        k = len(colori)
+        scala = []
+        for i, c in enumerate(colori):
+            scala.append([i / k, c])
+            scala.append([(i + 1) / k, c])
+        return scala
+
+    @app.callback(
+        Output("equita-tipo", "options"),
+        Input("tabs-principale", "value"),
+    )
+    def popola_tipi(tab):
+        return [{"label": _etichetta_tipo(c), "value": c} for c in col_dot]
+
+    @app.callback(
+        Output("equita-mappa", "figure"),
+        Input("equita-vista", "value"),
+        Input("equita-tipo", "value"),
+    )
+    def aggiorna_mappa_equita(vista, col_tipo):
+        col_tipo = col_tipo if col_tipo in dfe.columns else "dot_totale"
+        d = dfe
+        custom = np.stack(
+            [d["bisogno"].round(1), d["vulnerabilita"].round(1),
+             d[col_tipo], d["pop_totale"].astype(int)], axis=-1,
+        )
+        hover = ("bisogno: %{customdata[0]}<br>"
+                 "vulnerabilita': %{customdata[1]}<br>"
+                 "dotazione: %{customdata[2]}<br>"
+                 "popolazione: %{customdata[3]}<extra></extra>")
+        kwargs: dict = {}
+
+        if vista == "bivariata":
+            classi = sorted(COLORI_BIVARIATA)
+            codice = d["classe_bivariata"].map({c: i for i, c in enumerate(classi)})
+            kwargs = dict(
+                z=codice, zmin=0, zmax=len(classi),
+                colorscale=_colorscale_discreta([COLORI_BIVARIATA[c] for c in classi]),
+                showscale=False,
+            )
+        elif vista == "priority":
+            kwargs = dict(
+                z=d["equity_priority"].astype(int), zmin=0, zmax=2,
+                colorscale=_colorscale_discreta(["#313244", "#f38ba8"]),
+                showscale=False,
+            )
+        elif vista == "lisa":
+            cat = ["ns", "LL", "LH", "HH", "HL"]
+            colori = ["#313244", "#89b4fa", "#94e2d5", "#a6e3a1", "#f38ba8"]
+            codice = d["lisa_sig"].map({c: i for i, c in enumerate(cat)}).fillna(0)
+            kwargs = dict(
+                z=codice, zmin=0, zmax=len(cat),
+                colorscale=_colorscale_discreta(colori), showscale=False,
+            )
+        else:
+            col = {"bisogno": "bisogno", "vulnerabilita": "vulnerabilita",
+                   "dotazione": col_tipo}[vista]
+            z = d[col].astype(float)
+            kwargs = dict(
+                z=z, zmin=0, zmax=float(np.nanpercentile(z, 99)) or 1.0,
+                colorscale="Viridis",
+                colorbar=dict(title=dict(text=vista, font=dict(color="#cdd6f4")),
+                              tickfont=dict(color="#cdd6f4")),
+            )
+
+        fig = go.Figure(_ChoroplethMap(
+            geojson=geojson,
+            locations=d["SEZ21_ID"],
+            marker_line_width=0,
+            marker_opacity=0.82,
+            customdata=custom,
+            hovertemplate=hover,
+            **kwargs,
+        ))
+        fig.update_layout(
+            **{_MAP_KEY: dict(style="carto-darkmatter",
+                              center=dict(lat=41.9, lon=12.5), zoom=9.7)},
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="#181825",
+            uirevision="equita",
+        )
+        return fig
+
+    @app.callback(
+        Output("equita-indici", "children"),
+        Output("equita-lorenz", "figure"),
+        Input("equita-tipo", "value"),
+    )
+    def aggiorna_indici(col_tipo):
+        col_tipo = col_tipo if col_tipo in dfe.columns else "dot_totale"
+        pop = dfe["pop_totale"].to_numpy(dtype=float)
+        dot = dfe[col_tipo].to_numpy(dtype=float)
+        bis = dfe["bisogno"].to_numpy(dtype=float)
+
+        g = gini(dot, pop)
+        ci = concentration_index(dot, bis, pop)
+        n_prio = int(dfe["equity_priority"].sum())
+        pop_prio = int(dfe.loc[dfe["equity_priority"], "pop_totale"].sum())
+
+        stile_val = {"color": "#cdd6f4", "fontSize": "22px", "fontWeight": "700"}
+        stile_lab = {"color": "#6c7086", "fontSize": "11px"}
+        colore_ci = "#f38ba8" if ci < 0 else "#a6e3a1"
+        pannello = [
+            html.P("Indici sugli elementi filtrati", style=STILE_TITOLO_CARD),
+            html.Div([
+                html.Div(f"{ci:+.3f}", style={**stile_val, "color": colore_ci}),
+                html.Div("concentration index "
+                         + ("(pro-avvantaggiati)" if ci < 0 else "(pro-bisogno)"),
+                         style=stile_lab),
+            ], style={"marginBottom": "10px"}),
+            html.Div([
+                html.Div(f"{g:.3f}", style=stile_val),
+                html.Div("Gini dotazione pro-capite", style=stile_lab),
+            ], style={"marginBottom": "10px"}),
+            html.Div([
+                html.Div(f"{n_prio:,}".replace(",", "."), style=stile_val),
+                html.Div("equity priority zones", style=stile_lab),
+            ], style={"marginBottom": "10px"}),
+            html.Div([
+                html.Div(f"{pop_prio:,}".replace(",", "."), style=stile_val),
+                html.Div("residenti nelle zone prioritarie", style=stile_lab),
+            ]),
+        ]
+
+        curva = curva_lorenz(dot, pop)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
+                                 line=dict(color="#45475a", dash="dash"),
+                                 name="equidistribuzione", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=curva["frac_pop"], y=curva["frac_dotazione"],
+            mode="lines", line=dict(color="#89b4fa", width=2),
+            fill="tonexty", fillcolor="rgba(137,180,250,0.15)",
+            name="Lorenz",
+            hovertemplate="pop: %{x:.0%}<br>dotazione: %{y:.0%}<extra></extra>",
+        ))
+        fig.update_layout(
+            paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+            font=dict(color="#cdd6f4", size=11),
+            margin=dict(l=40, r=10, t=10, b=30),
+            showlegend=False,
+            xaxis=dict(title="quota popolazione", gridcolor="#313244",
+                       tickformat=".0%"),
+            yaxis=dict(title="quota dotazione", gridcolor="#313244",
+                       tickformat=".0%"),
+        )
+        return pannello, fig
+
+    @app.callback(
+        Output("equita-sensibilita", "children"),
+        Input("tabs-principale", "value"),
+    )
+    def tabella_sensibilita(tab):
+        sens = indici.get("sensibilita", {})
+        if not sens:
+            return html.P("Nessuna analisi di sensibilita' disponibile.",
+                          style={"color": "#6c7086", "fontSize": "12px"})
+        righe = [html.Tr([
+            html.Th("schema pesi", style={"textAlign": "left", "color": "#6c7086",
+                                          "fontSize": "11px"}),
+            html.Th("CI", style={"textAlign": "right", "color": "#6c7086",
+                                 "fontSize": "11px"}),
+        ])]
+        ci_princ = (indici.get("indici", {}).get("dot_totale", {})
+                    .get("concentration_index"))
+        if ci_princ is not None:
+            sens = {"principale": {"concentration_index_dot_totale": ci_princ},
+                    **sens}
+        for nome, v in sens.items():
+            ci = v.get("concentration_index_dot_totale")
+            righe.append(html.Tr([
+                html.Td(nome, style={"color": "#cdd6f4", "fontSize": "12px"}),
+                html.Td(f"{ci:+.3f}",
+                        style={"textAlign": "right", "fontSize": "12px",
+                               "color": "#f38ba8" if ci < 0 else "#a6e3a1"}),
+            ]))
+        return html.Table(righe, style={"width": "100%"})
+
+
+# =====================================================================
+# Tab Scenari / Ottimizzazione (Modulo C del PSS)
+# =====================================================================
+
+
+def _registra_callbacks_scenari(app: Any, scenari: dict) -> None:
+    """Callback della tab Scenari. Nessuna ottimizzazione nei callback:
+    lo slider seleziona uno degli scenari pre-calcolati da s09."""
+    from dash import html
+
+    scelte: pd.DataFrame = scenari["scelte"]
+    indici = scenari["indici"]
+    frontiera = pd.DataFrame(indici.get("frontiera", []))
+    pesi_disponibili = sorted(scelte["peso_equita"].unique())
+
+    def _scenario_vicino(w: float) -> float:
+        return min(pesi_disponibili, key=lambda p: abs(p - float(w or 0)))
+
+    @app.callback(
+        Output("scenari-mappa", "figure"),
+        Output("scenari-riepilogo", "children"),
+        Output("scenari-pareto", "figure"),
+        Output("scenari-tabella", "children"),
+        Input("scenari-peso", "value"),
+    )
+    def aggiorna_scenario(w):
+        w_sel = _scenario_vicino(w)
+        sel = scelte[scelte["peso_equita"] == w_sel].sort_values("ordine")
+        punto = frontiera[frontiera["peso_equita"] == w_sel].iloc[0]
+
+        # --- Mappa: siti proposti ------------------------------------
+        colori_tipo = {"segmento": "#89b4fa", "intersezione": "#fab387"}
+        fig = go.Figure()
+        for tipo, d in sel.groupby("tipo_sito"):
+            fig.add_trace(_ScatterMap(
+                lat=d["lat"], lon=d["lon"],
+                mode="markers+text",
+                marker=dict(size=16, color=colori_tipo.get(tipo, "#f38ba8")),
+                text=d["ordine"].astype(str),
+                textfont=dict(size=9, color="#11111b"),
+                name=tipo,
+                customdata=np.stack(
+                    [d["toponimo"].fillna(""), d["excess_EPDO_i"].round(1)],
+                    axis=-1),
+                hovertemplate=("<b>#%{text}</b> %{customdata[0]}<br>"
+                               "eccesso EPDO: %{customdata[1]}"
+                               "<extra></extra>"),
+            ))
+        fig.update_layout(
+            **{_MAP_KEY: dict(style="carto-darkmatter",
+                              center=dict(lat=41.9, lon=12.5), zoom=10)},
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="#181825",
+            legend=dict(font=dict(color=_TESTO), bgcolor="#1e1e2e",
+                        x=0.01, y=0.99),
+            uirevision="scenari",
+        )
+
+        # --- Riepilogo -------------------------------------------------
+        stile_val = {"color": "#cdd6f4", "fontSize": "20px", "fontWeight": "700"}
+        stile_lab = {"color": "#6c7086", "fontSize": "11px"}
+        riepilogo = [
+            html.P(f"Scenario w = {w_sel:g}", style=STILE_TITOLO_CARD_LOCAL),
+            html.Div([
+                html.Div(f"{punto['pct_rischio_coperto']:.1f}%", style=stile_val),
+                html.Div("rischio (excess EPDO) coperto", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(f"{punto['pct_vulnerabilita_coperta']:.1f}%", style=stile_val),
+                html.Div("vulnerabilita' sociale coperta", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(f"{int(punto['pop_coperta']):,}".replace(",", "."),
+                         style=stile_val),
+                html.Div("residenti entro il raggio", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(f"{int(punto['n_scelti'])} / budget {indici.get('budget')}",
+                         style=stile_val),
+                html.Div(f"interventi (raggio {indici.get('raggio_copertura_m'):g} m, "
+                         f"metodo {punto['metodo']})", style=stile_lab),
+            ]),
+        ]
+
+        # --- Frontiera di Pareto ---------------------------------------
+        fig_p = go.Figure()
+        fig_p.add_trace(go.Scatter(
+            x=frontiera["pct_rischio_coperto"],
+            y=frontiera["pct_vulnerabilita_coperta"],
+            mode="lines+markers",
+            line=dict(color="#89b4fa"),
+            marker=dict(size=7, color="#89b4fa"),
+            customdata=frontiera["peso_equita"],
+            hovertemplate=("w=%{customdata}<br>rischio %{x:.1f}%<br>"
+                           "vulnerabilita' %{y:.1f}%<extra></extra>"),
+        ))
+        fig_p.add_trace(go.Scatter(
+            x=[punto["pct_rischio_coperto"]],
+            y=[punto["pct_vulnerabilita_coperta"]],
+            mode="markers",
+            marker=dict(size=14, color="#f38ba8",
+                        line=dict(width=2, color="#cdd6f4")),
+            hoverinfo="skip",
+        ))
+        fig_p.update_layout(
+            paper_bgcolor=_SFONDO, plot_bgcolor=_SFONDO,
+            font=dict(color=_TESTO, size=11),
+            margin=dict(l=45, r=10, t=10, b=35),
+            showlegend=False,
+            xaxis=dict(title="% rischio coperto", gridcolor=_GRIGLIA),
+            yaxis=dict(title="% vulnerabilita' coperta", gridcolor=_GRIGLIA),
+        )
+
+        # --- Tabella siti ----------------------------------------------
+        dd = sel[["ordine", "tipo_sito", "toponimo", "excess_EPDO_i"]].copy()
+        dd.columns = ["#", "Tipo", "Sito", "Ecc. EPDO"]
+        dd["Ecc. EPDO"] = dd["Ecc. EPDO"].round(1)
+        tabella = dash_table.DataTable(
+            data=dd.to_dict("records"),
+            columns=[{"name": c, "id": c} for c in dd.columns],
+            page_size=10,
+            style_header={"backgroundColor": "#313244", "color": _TESTO,
+                          "fontWeight": "600", "fontSize": "11px",
+                          "border": "none"},
+            style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
+                        "fontSize": "11px", "border": f"1px solid {_GRIGLIA}",
+                        "padding": "4px 8px", "maxWidth": "180px",
+                        "overflow": "hidden", "textOverflow": "ellipsis"},
+        )
+        return fig, riepilogo, fig_p, tabella
+
+
+STILE_TITOLO_CARD_LOCAL = {
+    "color": "#cdd6f4", "fontSize": "13px", "fontWeight": "600",
+    "textTransform": "uppercase", "letterSpacing": "0.05em",
+    "marginBottom": "10px",
+}
+
+
+# =====================================================================
+# Tab Valutazione before-after (Modulo D del PSS)
+# =====================================================================
+
+_COLORI_STATO_VAL = {
+    "riduzione": "#a6e3a1",       # theta < 1: l'intervento funziona
+    "aumento": "#f38ba8",         # theta >= 1
+    "in_attesa": "#f9e2af",       # non valutabile: dati/date insufficienti
+    "nessun_sito": "#585b70",     # fuori rete analizzata
+}
+
+
+def _registra_callbacks_valutazione(app: Any, val: pd.DataFrame) -> None:
+    """Callback della tab Valutazione. Tutto pre-calcolato da s10:
+    qui solo filtri e rendering. Con le date segnaposto gli interventi
+    sono 'in attesa'; si accendono da soli con le date reali."""
+    from dash import html
+
+    val = val.copy()
+
+    def _stato(r) -> str:
+        if r["valutabile"]:
+            return "riduzione" if r["theta"] < 1.0 else "aumento"
+        if r["motivo"] == "nessun_sito_trattato":
+            return "nessun_sito"
+        return "in_attesa"
+
+    val["stato"] = val.apply(_stato, axis=1)
+    tipi = sorted(val["tipo"].unique())
+
+    @app.callback(
+        Output("valutazione-tipo", "options"),
+        Input("tabs-principale", "value"),
+    )
+    def popola_tipi_val(tab):
+        return ([{"label": "Tutti i tipi", "value": "tutti"}]
+                + [{"label": t.replace("_", " ").capitalize(), "value": t}
+                   for t in tipi])
+
+    @app.callback(
+        Output("valutazione-mappa", "figure"),
+        Output("valutazione-riepilogo", "children"),
+        Output("valutazione-forest", "figure"),
+        Output("valutazione-tabella", "children"),
+        Input("valutazione-tipo", "value"),
+    )
+    def aggiorna_valutazione(tipo):
+        d = val if (not tipo or tipo == "tutti") else val[val["tipo"] == tipo]
+        d = d.dropna(subset=["lon", "lat"])
+
+        # --- Mappa ------------------------------------------------------
+        etichette = {
+            "riduzione": "riduzione (theta<1)",
+            "aumento": "aumento (theta>=1)",
+            "in_attesa": "in attesa di dati/date",
+            "nessun_sito": "fuori rete analizzata",
+        }
+        fig = go.Figure()
+        for stato in ("nessun_sito", "in_attesa", "aumento", "riduzione"):
+            s = d[d["stato"] == stato]
+            if s.empty:
+                continue
+            theta_txt = s["theta"].map(
+                lambda t: f"{t:.2f}" if pd.notna(t) else "-")
+            fig.add_trace(_ScatterMap(
+                lat=s["lat"], lon=s["lon"],
+                mode="markers",
+                marker=dict(size=9 if stato in ("riduzione", "aumento") else 6,
+                            color=_COLORI_STATO_VAL[stato]),
+                name=etichette[stato],
+                customdata=np.stack(
+                    [s["nome"].fillna(s["id_intervento"]), s["tipo"],
+                     theta_txt, s["motivo"].fillna("valutato")], axis=-1),
+                hovertemplate=("<b>%{customdata[0]}</b><br>"
+                               "%{customdata[1]}<br>"
+                               "theta: %{customdata[2]}<br>"
+                               "stato: %{customdata[3]}<extra></extra>"),
+            ))
+        fig.update_layout(
+            **{_MAP_KEY: dict(style="carto-darkmatter",
+                              center=dict(lat=41.9, lon=12.5), zoom=9.7)},
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="#181825",
+            legend=dict(font=dict(color=_TESTO), bgcolor="#1e1e2e",
+                        x=0.01, y=0.99),
+            uirevision="valutazione",
+        )
+
+        # --- Riepilogo ----------------------------------------------------
+        stile_val = {"color": "#cdd6f4", "fontSize": "20px", "fontWeight": "700"}
+        stile_lab = {"color": "#6c7086", "fontSize": "11px"}
+        n_val = int(d["valutabile"].sum())
+        n_attesa = int((d["stato"] == "in_attesa").sum())
+        riepilogo = [
+            html.P("Stato valutazioni", style=STILE_TITOLO_CARD_LOCAL),
+            html.Div([
+                html.Div(str(n_val), style={**stile_val, "color": "#a6e3a1"}),
+                html.Div("interventi valutati", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Div(str(n_attesa), style={**stile_val, "color": "#f9e2af"}),
+                html.Div("in attesa di dati/date reali", style=stile_lab),
+            ], style={"marginBottom": "8px"}),
+        ]
+        if n_val:
+            theta_med = float(d.loc[d["valutabile"], "theta"].median())
+            riepilogo.append(html.Div([
+                html.Div(f"{theta_med:.2f}", style=stile_val),
+                html.Div("theta mediano (1 = nessun effetto)", style=stile_lab),
+            ]))
+
+        # --- Forest plot ---------------------------------------------------
+        v = d[d["valutabile"]].sort_values("theta").head(30)
+        if v.empty:
+            fig_f = _figura_vuota(
+                "Nessun intervento ancora valutabile:\nservono le date reali "
+                "di attivazione e almeno 12 mesi di dati nel 'dopo'."
+            )
+        else:
+            nomi = v["nome"].fillna(v["id_intervento"]).str.slice(0, 28)
+            fig_f = go.Figure()
+            fig_f.add_vline(x=1.0, line=dict(color="#6c7086", dash="dash"))
+            fig_f.add_trace(go.Scatter(
+                x=v["theta"], y=nomi,
+                error_x=dict(
+                    type="data", symmetric=False,
+                    array=(v["ic_high"] - v["theta"]),
+                    arrayminus=(v["theta"] - v["ic_low"]),
+                    color="#6c7086",
+                ),
+                mode="markers",
+                marker=dict(size=8, color=np.where(v["theta"] < 1,
+                                                   "#a6e3a1", "#f38ba8")),
+                hovertemplate=("theta=%{x:.2f}<extra></extra>"),
+            ))
+            fig_f.update_layout(
+                paper_bgcolor=_SFONDO, plot_bgcolor=_SFONDO,
+                font=dict(color=_TESTO, size=10),
+                margin=dict(l=10, r=10, t=10, b=30),
+                xaxis=dict(title="theta (CMF)", gridcolor=_GRIGLIA),
+                yaxis=dict(gridcolor=_GRIGLIA, automargin=True),
+                showlegend=False,
+            )
+
+        # --- Tabella --------------------------------------------------------
+        cols_show = ["id_intervento", "tipo", "fase", "stato", "n_siti",
+                     "O_pre", "O_post", "theta"]
+        dd = d[cols_show].copy()
+        dd["theta"] = dd["theta"].round(2)
+        # Prima i valutati (theta presente), poi gli altri.
+        dd = dd.sort_values("theta", na_position="last")
+        tabella = dash_table.DataTable(
+            data=dd.head(200).to_dict("records"),
+            columns=[{"name": c, "id": c} for c in cols_show],
+            page_size=12,
+            sort_action="native",
+            style_header={"backgroundColor": "#313244", "color": _TESTO,
+                          "fontWeight": "600", "fontSize": "11px",
+                          "border": "none"},
+            style_cell={"backgroundColor": _SFONDO, "color": _TESTO,
+                        "fontSize": "11px", "border": f"1px solid {_GRIGLIA}",
+                        "padding": "4px 8px", "maxWidth": "160px",
+                        "overflow": "hidden", "textOverflow": "ellipsis"},
+        )
+        return fig, riepilogo, fig_f, tabella

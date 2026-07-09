@@ -80,6 +80,24 @@ python -m pytest tests/ -q
 
 Lo smoke test verifica che tutti i moduli `src.*` siano importabili.
 
+## Note sui dati versionati
+
+I risultati finali per uso diretto (senza eseguire la pipeline) sono
+versionati come GeoJSON **compressi** in `data/processed/*.geojson.gz`
+(il GeoJSON piano dei segmenti supera i 50 MB e fa scattare i warning
+di GitHub). Per leggerli:
+
+```python
+import geopandas as gpd
+gdf = gpd.read_file("/vsigzip/data/processed/segmenti.geojson.gz")
+```
+
+oppure decomprimerli con `gunzip -k`. QGIS li apre direttamente.
+
+Nota: le versioni storiche non compresse restano nella cronologia git;
+una riscrittura della history (es. `git filter-repo`) e' prevista come
+operazione una tantum prima della pubblicazione open-source.
+
 ## Riferimenti
 
 - Specifica metodologica e tecnica: [`piano_progetto_blackpoint.md`](piano_progetto_blackpoint.md)

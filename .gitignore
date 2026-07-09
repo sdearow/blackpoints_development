@@ -59,9 +59,11 @@ data/processed/*
 # I CSV degli incidenti grezzi sono versionati esplicitamente.
 !data/raw/incidenti/
 !data/raw/incidenti/*.csv
-# GeoJSON dei risultati finali (versionati per uso diretto senza pipeline)
-!data/processed/segmenti.geojson
-!data/processed/intersezioni.geojson
+# GeoJSON dei risultati finali: versionata la sola copia compressa
+# (il file piano dei segmenti supera i 50 MB -> warning GitHub a ogni
+# push). geopandas/QGIS leggono i .geojson.gz direttamente.
+!data/processed/segmenti.geojson.gz
+!data/processed/intersezioni.geojson.gz
 
 # --- Output dashboard / report ---
 dashboard/assets/generated/

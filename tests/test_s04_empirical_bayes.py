@@ -13,8 +13,10 @@ from src.s04_empirical_bayes import (
     riassumi_eb,
 )
 
-PESI_EPDO = {"mortale": 167, "ferito_grave": 24, "ferito_lieve": 2, "solo_danni": 1}
-COSTO_UNITARIO = 9000.0
+# Pesi e costi allineati a config.yaml: il dato incidenti non distingue
+# feriti gravi/lievi -> categoria unica "feriti" (12/3/1, Hauer/AASHTO).
+PESI_EPDO = {"mortale": 12, "feriti": 3, "solo_danni": 1}
+COSTI_SOCIALI = {"mortale": 1_500_000.0, "feriti": 48_300.0, "solo_danni": 9_000.0}
 
 
 # ---------------------------------------------------------------------------
@@ -111,19 +113,18 @@ def test_calcola_epdo_formula():
     df = pd.DataFrame(
         {
             "n_mortali": [1],
-            "n_feriti_gravi": [2],
-            "n_feriti_lievi": [3],
+            "n_feriti": [2],
             "n_solo_danni": [4],
         }
     )
     epdo = calcola_epdo(df, PESI_EPDO)
-    atteso = 1 * 167 + 2 * 24 + 3 * 2 + 4 * 1
+    atteso = 1 * 12 + 2 * 3 + 4 * 1
     assert epdo.iloc[0] == pytest.approx(atteso)
 
 
 def test_calcola_epdo_tutto_zero():
     df = pd.DataFrame(
-        {"n_mortali": [0], "n_feriti_gravi": [0], "n_feriti_lievi": [0], "n_solo_danni": [0]}
+        {"n_mortali": [0], "n_feriti": [0], "n_solo_danni": [0]}
     )
     assert calcola_epdo(df, PESI_EPDO).iloc[0] == pytest.approx(0.0)
 
@@ -147,8 +148,7 @@ def _df_siti_finto(n: int = 50) -> pd.DataFrame:
             "id_sito": range(n),
             "n_incidenti": rng.poisson(5, n),
             "n_mortali": rng.binomial(1, 0.01, n),
-            "n_feriti_gravi": rng.binomial(2, 0.05, n),
-            "n_feriti_lievi": rng.binomial(3, 0.3, n),
+            "n_feriti": rng.binomial(3, 0.3, n),
             "n_solo_danni": rng.poisson(2, n),
             "E_i": rng.uniform(1, 15, n),
             "k_spf": [0.3] * n,
@@ -159,7 +159,7 @@ def _df_siti_finto(n: int = 50) -> pd.DataFrame:
 
 def test_arricchisci_produce_tutte_le_colonne():
     df = _df_siti_finto()
-    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTO_UNITARIO)
+    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTI_SOCIALI)
     for col in ("w_i", "EB_i", "excess_i", "var_EB_i",
                 "EPDO_i", "peso_medio_epdo", "excess_EPDO_i",
                 "costo_sociale_eccesso_eur"):
@@ -168,13 +168,13 @@ def test_arricchisci_produce_tutte_le_colonne():
 
 def test_arricchisci_w_tra_0_e_1():
     df = _df_siti_finto()
-    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTO_UNITARIO)
+    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTI_SOCIALI)
     assert out["w_i"].between(0, 1).all()
 
 
 def test_arricchisci_eb_tra_O_e_E():
     df = _df_siti_finto()
-    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTO_UNITARIO)
+    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTI_SOCIALI)
     O = out["n_incidenti"].astype(float)
     E = out["E_i"]
     assert np.all(
@@ -184,13 +184,14 @@ def test_arricchisci_eb_tra_O_e_E():
 
 
 def test_arricchisci_costo_proporzionale_eccesso():
-    """Il costo sociale deve essere proporzionale all'eccesso EPDO."""
+    """Il costo sociale dell'eccesso = excess_i * costo medio per
+    incidente del sito (0 per i siti senza incidenti)."""
     df = _df_siti_finto(n=10)
-    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTO_UNITARIO)
-    np.testing.assert_allclose(
-        out["costo_sociale_eccesso_eur"],
-        out["excess_EPDO_i"] * COSTO_UNITARIO,
-    )
+    out = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTI_SOCIALI)
+    n = out["n_incidenti"].astype(float)
+    costo_medio = np.where(n > 0, out["costo_sociale_eur"] / n, 0.0)
+    atteso = out["excess_i"].fillna(0.0) * costo_medio
+    np.testing.assert_allclose(out["costo_sociale_eccesso_eur"], atteso)
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +201,7 @@ def test_arricchisci_costo_proporzionale_eccesso():
 
 def test_riassumi_eb_struttura():
     df = _df_siti_finto()
-    df_arricchito = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTO_UNITARIO)
+    df_arricchito = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTI_SOCIALI)
     r = riassumi_eb(df_arricchito, df_arricchito)
     for sezione in ("segmenti", "intersezioni"):
         assert sezione in r
@@ -212,7 +213,7 @@ def test_riassumi_eb_struttura():
 
 def test_riassumi_eb_coerenza_totali():
     df = _df_siti_finto()
-    df_arricchito = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTO_UNITARIO)
+    df_arricchito = arricchisci_con_eb_epdo(df, PESI_EPDO, COSTI_SOCIALI)
     r = riassumi_eb(df_arricchito, df_arricchito)
     # O_tot deve coincidere con la somma effettiva.
     assert r["segmenti"]["O_tot"] == int(df["n_incidenti"].sum())
