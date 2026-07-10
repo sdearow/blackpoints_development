@@ -24,6 +24,17 @@ IF ERRORLEVEL 1 (
     exit /b 1
 )
 
+REM Installa/aggiorna le dipendenze (i moduli PSS usano anche
+REM libpysal/esda per l'equita' e pulp per l'ottimizzazione).
+echo  Verifica dipendenze...
+python -m pip install -r requirements.txt --quiet
+IF ERRORLEVEL 1 (
+    echo [ERRORE] Installazione dipendenze fallita. Controlla la connessione
+    echo          o esegui manualmente: python -m pip install -r requirements.txt
+    pause
+    exit /b 1
+)
+
 REM --- Step condizionali (moduli PSS: girano solo se i dati ci sono) ---
 IF EXIST "data\raw\censimento\Sezioni_ISTAT.gpkg" (
     echo  ----------------------------------------------------------
