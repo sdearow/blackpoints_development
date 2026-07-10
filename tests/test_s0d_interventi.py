@@ -51,11 +51,45 @@ class TestCaricaSorgente:
                "campo_municipio": "MUN"}
         out = carica_sorgente(cfg, sorgente_gpkg, CRS)
         assert len(out) == 3
-        assert list(out["id_intervento"]) == ["Velox:0000", "Velox:0001", "Velox:0002"]
+        # Id content-based: "stem:hash10" univoci.
+        assert out["id_intervento"].str.match(r"^Velox:[0-9a-f]{10}$").all()
+        assert out["id_intervento"].nunique() == 3
         assert (out["tipo"] == "velox").all()
         assert out["nome"].iloc[0] == "VLX-1"
         assert out["fase_orig"].iloc[1] == "aprovato"
         assert out["municipio"].iloc[2] == 3
+
+    def test_id_stabili_al_riordino(self, tmp_path):
+        """Riordinare le righe della sorgente NON deve cambiare gli id:
+        e' la garanzia che le date confermate nel CSV di override restino
+        agganciate all'intervento giusto."""
+        gdf = gpd.GeoDataFrame(
+            {"NOME": ["A", "B", "C"],
+             "geometry": [Point(0, 0), Point(100, 0), Point(200, 0)]},
+            crs=CRS,
+        )
+        gdf.to_file(tmp_path / "S.gpkg", driver="GPKG")
+        gdf.iloc[::-1].reset_index(drop=True).to_file(
+            tmp_path / "S_riordinata.gpkg", driver="GPKG")
+
+        out1 = carica_sorgente({"file": "S.gpkg", "tipo": "x",
+                                "campo_nome": "NOME"}, tmp_path, CRS)
+        out2 = carica_sorgente({"file": "S_riordinata.gpkg", "tipo": "x",
+                                "campo_nome": "NOME"}, tmp_path, CRS)
+        # Stesso nome -> stesso hash (a meno dello stem, che qui differisce
+        # apposta: confronta la sola parte hash).
+        h1 = dict(zip(out1["nome"], out1["id_intervento"].str.split(":").str[1]))
+        h2 = dict(zip(out2["nome"], out2["id_intervento"].str.split(":").str[1]))
+        assert h1 == h2
+
+    def test_geometrie_duplicate_disambiguate(self, tmp_path):
+        gdf = gpd.GeoDataFrame(
+            {"geometry": [Point(0, 0), Point(0, 0), Point(9, 9)]}, crs=CRS
+        )
+        gdf.to_file(tmp_path / "D.gpkg", driver="GPKG")
+        out = carica_sorgente({"file": "D.gpkg", "tipo": "x"}, tmp_path, CRS)
+        assert out["id_intervento"].nunique() == 3
+        assert out["id_intervento"].str.endswith(("-1", "-2")).sum() == 2
 
     def test_riproiezione(self, tmp_path):
         gdf = gpd.GeoDataFrame(

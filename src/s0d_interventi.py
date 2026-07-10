@@ -46,6 +46,23 @@ log = logging.getLogger("s0d_interventi")
 FASI_VALIDE = {"pianificato", "in_corso", "realizzato", "da_definire"}
 
 
+def _id_stabile(geom: Any, stem: str) -> str:
+    """Id content-based: hash della geometria (WKB con precisione 0.1 m).
+
+    Stabile al riordino delle righe e agli edit degli attributi della
+    sorgente: cambia solo se cambia la geometria. Indispensabile perche'
+    le date confermate nel CSV di override sono agganciate a questi id
+    (gli id nativi delle sorgenti sono quasi tutti non univoci o nulli).
+    """
+    import hashlib
+
+    import shapely
+
+    g = shapely.set_precision(geom, 0.1)
+    h = hashlib.sha1(shapely.to_wkb(g)).hexdigest()[:10]
+    return f"{stem}:{h}"
+
+
 def carica_sorgente(
     cfg_sorgente: dict[str, Any],
     progetti_dir: Path,
@@ -71,7 +88,20 @@ def carica_sorgente(
 
     stem = Path(cfg_sorgente["file"]).stem
     out = gpd.GeoDataFrame(index=gdf.index, geometry=gdf.geometry, crs=gdf.crs)
-    out["id_intervento"] = [f"{stem}:{i:04d}" for i in range(len(gdf))]
+    out["id_intervento"] = [_id_stabile(g, stem) for g in gdf.geometry]
+    # Geometrie identiche nella stessa sorgente (duplicati veri):
+    # disambigua con un progressivo, avvisando (solo tra loro l'ordine
+    # delle righe torna a contare).
+    dup = out["id_intervento"].duplicated(keep=False)
+    if dup.any():
+        log.warning(
+            "%s: %d geometrie duplicate, id disambiguati con progressivo",
+            cfg_sorgente["file"], int(dup.sum()),
+        )
+        prog = out.groupby("id_intervento").cumcount()
+        out.loc[dup, "id_intervento"] = (
+            out.loc[dup, "id_intervento"] + "-" + (prog[dup] + 1).astype(str)
+        )
     out["tipo"] = cfg_sorgente["tipo"]
     out["fonte"] = cfg_sorgente["file"]
 

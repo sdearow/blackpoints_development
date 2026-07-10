@@ -160,6 +160,7 @@ def calcola_dotazione(
     sezioni: gpd.GeoDataFrame,
     interventi: gpd.GeoDataFrame,
     tipi: list[str] | None = None,
+    fasi: list[str] | None = None,
 ) -> pd.DataFrame:
     """Conteggio di interventi che *servono* ciascuna sezione.
 
@@ -167,8 +168,15 @@ def calcola_dotazione(
     ``raggio_influenza_m`` per i puntuali, impronta per linee/aree)
     interseca la sezione. Ritorna ``dot_totale`` + una colonna
     ``dot_{tipo}`` per tipologia.
+
+    ``fasi``: se valorizzato (es. ["realizzato"]) considera solo gli
+    interventi in quelle fasi - cruciale quando il database consolida le
+    fasi reali: senza filtro la dotazione fotografa il database progetti
+    (realizzato + pianificato + scenario), non il costruito.
     """
     interv = interventi if tipi is None else interventi[interventi["tipo"].isin(tipi)]
+    if fasi is not None and "fase" in interv.columns:
+        interv = interv[interv["fase"].isin(fasi)]
     interv = interv.copy()
     raggio = interv["raggio_influenza_m"].fillna(0.0).astype(float)
     interv["geometry"] = np.where(
@@ -303,8 +311,26 @@ def main(config: dict[str, Any]) -> None:  # noqa: C901
 
     # --- 4. Dotazione --------------------------------------------------
     log.info("Calcolo dotazione interventi per sezione...")
-    tipi_dotazione = cfg.get("tipi_dotazione")  # None = tutti
-    dot = calcola_dotazione(sezioni, interventi, tipi=tipi_dotazione)
+    tipi_dotazione = cfg.get("tipi_dotazione")   # None = tutti
+    fasi_dotazione = cfg.get("fasi_dotazione")   # None = tutte le fasi
+
+    # Trasparenza sulla natura del dato: finche' fasi e date non sono
+    # consolidate, la dotazione misura il DATABASE PROGETTI, non il
+    # costruito. Loggare la composizione rende impossibile dimenticarlo.
+    comp_fasi = interventi["fase"].value_counts().to_dict()
+    n_placeholder = int((interventi.get("data_stato") == "placeholder").sum())
+    log.warning(
+        "Composizione interventi: fasi=%s | date segnaposto=%d/%d%s",
+        comp_fasi, n_placeholder, len(interventi),
+        "" if fasi_dotazione else
+        " | NESSUN filtro fase attivo: la dotazione include anche "
+        "pianificato/scenario (impostare equita.fasi_dotazione quando "
+        "le fasi sono consolidate)",
+    )
+
+    dot = calcola_dotazione(
+        sezioni, interventi, tipi=tipi_dotazione, fasi=fasi_dotazione
+    )
     sezioni = sezioni.join(dot)
     col_dot = [c for c in sezioni.columns if c.startswith("dot_")]
 
@@ -334,11 +360,21 @@ def main(config: dict[str, Any]) -> None:  # noqa: C901
         lisa=lisa,
     )
 
+    indici_per_col = calcola_indici_sintetici(sezioni, col_dot)
+    # CI medio per tipologia: contromisura alla dominanza numerica di un
+    # singolo tipo (le ciclabili sono il 70% degli elementi) nel CI di
+    # dot_totale. Ogni tipologia pesa uguale.
+    ci_tipi = [v["concentration_index"] for c, v in indici_per_col.items()
+               if c != "dot_totale"]
     indici = {
         "unita_spaziale": "sezione_censimento_2021",
         "n_sezioni_abitate": int(abitate.sum()),
         "schema_pesi": "principale",
-        "indici": calcola_indici_sintetici(sezioni, col_dot),
+        "composizione_fasi": comp_fasi,
+        "fasi_dotazione": fasi_dotazione,
+        "n_date_placeholder": n_placeholder,
+        "ci_medio_per_tipo": round(float(np.mean(ci_tipi)), 4) if ci_tipi else None,
+        "indici": indici_per_col,
     }
 
     # --- Sensibilita' sui pesi di vulnerabilita' -----------------------

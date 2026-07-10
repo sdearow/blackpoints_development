@@ -364,6 +364,15 @@ def main(config: dict[str, Any]) -> None:
     gdf_seg = gpd.read_file(prio_path, layer="segmenti")
     gdf_int = gpd.read_file(prio_path, layer="intersezioni")
 
+    # Idempotenza: questo step riscrive il file aggiungendo colonne; se
+    # sta rigirando senza un nuovo s05, le colonne del run precedente
+    # vanno rimosse (altrimenti il merge di nkde_max collide in _x/_y).
+    gia_presenti = [c for c in ("ksi_km", "is_hin", "rank_ksi", "nkde_max")
+                    if c in gdf_seg.columns]
+    if gia_presenti:
+        log.info("Rimuovo colonne del run precedente: %s", gia_presenti)
+        gdf_seg = gdf_seg.drop(columns=gia_presenti)
+
     inc_path = RADICE_PROGETTO / config["paths"]["interim"]["incidenti_matched"]
     log.info("Caricamento incidenti matched da %s", inc_path)
     gdf_inc = gpd.read_file(inc_path, layer="incidenti_matched")
