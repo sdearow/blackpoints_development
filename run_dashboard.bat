@@ -20,9 +20,10 @@ IF ERRORLEVEL 1 (
     exit /b 1
 )
 
-REM Installa le dipendenze se mancanti
+REM Installa le dipendenze se mancanti (tutte, da requirements.txt:
+REM la dashboard usa anche pysal/esda per gli indici di equita').
 echo  Verifica dipendenze...
-python -m pip install dash plotly geopandas pandas numpy pyogrio --quiet
+python -m pip install -r requirements.txt --quiet
 
 echo.
 echo  Avvio dashboard su http://localhost:8050
