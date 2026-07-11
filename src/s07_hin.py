@@ -78,9 +78,22 @@ def calcola_ksi(df: pd.DataFrame, metrica: str = "ksi", usa_eb: bool = True) -> 
     return grezzo * fattore
 
 
-def calcola_ksi_km(df: pd.DataFrame, ksi: pd.Series) -> pd.Series:
-    """Densita' lineare di gravita': KSI (o EPDO) per km di segmento."""
-    lung_km = df["lunghezza_m"].astype(float) / 1000.0
+def calcola_ksi_km(
+    df: pd.DataFrame, ksi: pd.Series, lunghezza_min_m: float = 100.0
+) -> pd.Series:
+    """Densita' lineare di gravita': KSI (o EPDO) per km di segmento.
+
+    La lunghezza al denominatore ha un floor (``lunghezza_min_m``,
+    default 100 m): il 74% dei segmenti di Roma e' sotto i 100 m e il
+    40% dei KSI vi si concentra - escluderli falserebbe la HIN, ma senza
+    floor un singolo KSI su un segmento di 12 m produce densita'
+    esplosive (83/km) che scavalcano tutto il ranking. Il floor
+    regolarizza il denominatore preservando tutta la massa di danno.
+    """
+    lung_km = (
+        df["lunghezza_m"].astype(float).clip(lower=float(lunghezza_min_m))
+        / 1000.0
+    )
     ksi_km = pd.Series(0.0, index=df.index)
     valido = lung_km > 0
     ksi_km.loc[valido] = ksi.loc[valido] / lung_km.loc[valido]
@@ -403,9 +416,10 @@ def main(config: dict[str, Any]) -> None:
     metrica = str(cfg_hin.get("metrica", "ksi"))
     usa_eb = bool(cfg_hin.get("usa_eb", True))
     soglia = float(cfg_hin.get("soglia_copertura", 0.70))
+    lung_min = float(cfg_hin.get("lunghezza_min_densita_m", 100.0))
 
     ksi = calcola_ksi(gdf_seg, metrica=metrica, usa_eb=usa_eb)
-    ksi_km = calcola_ksi_km(gdf_seg, ksi)
+    ksi_km = calcola_ksi_km(gdf_seg, ksi, lunghezza_min_m=lung_min)
     hin = costruisci_hin(gdf_seg, ksi, ksi_km, soglia_copertura=soglia)
     gdf_seg["ksi_km"] = ksi_km
     gdf_seg["is_hin"] = hin["is_hin"]

@@ -589,14 +589,20 @@ def associa_semafori(
     gdf_intersezioni: gpd.GeoDataFrame,
     gdf_semafori: gpd.GeoDataFrame,
     raggio_m: float,
+    raggio_max_m: float | None = 100.0,
 ) -> gpd.GeoDataFrame:
     """Associa ogni semaforo veicolare al nodo-intersezione piu' vicino.
 
-    Strategia (scelta dall'utente, opzione C del setup):
-    - ogni semaforo ``is_veicolare`` viene associato in modo assoluto al
-      nodo piu' vicino, indipendentemente dalla distanza;
-    - se la distanza supera ``raggio_m``, l'associazione viene loggata
-      come warning (ma il nodo risulta comunque semaforizzato);
+    Strategia:
+    - ogni semaforo ``is_veicolare`` viene associato al nodo piu' vicino;
+    - oltre ``raggio_m`` (soglia attesa) l'associazione viene loggata
+      come warning ma mantenuta;
+    - oltre ``raggio_max_m`` (tetto, default 100 m) l'associazione viene
+      SCARTATA: un semaforo a centinaia di metri non semaforizza un
+      incrocio - nel dato reale si osservavano associazioni fino a
+      1.554 m che misclassificavano nodi nella SPF 'semaforizzata'.
+      ``raggio_max_m=None`` ripristina il comportamento senza tetto
+      (la vecchia "scelta C");
     - un nodo e' ``is_semaforizzata`` se almeno un semaforo veicolare
       gli e' stato associato.
 
@@ -636,8 +642,7 @@ def associa_semafori(
         gdf_out["id_impianti"] = [[] for _ in range(len(gdf_out))]
         return gdf_out
 
-    # sjoin_nearest: per ogni semaforo trova l'intersezione piu' vicina
-    # (nessun limite di distanza: scelta C dell'utente).
+    # sjoin_nearest: per ogni semaforo trova l'intersezione piu' vicina.
     joined = gpd.sjoin_nearest(
         gdf_v[["id_impianto", "geometry"]],
         gdf_intersezioni[["id_nodo", "geometry"]],
@@ -645,7 +650,21 @@ def associa_semafori(
         distance_col="distanza_m",
     )
 
-    # Log di warning per i semafori oltre soglia.
+    # Tetto: le associazioni oltre raggio_max_m vengono scartate.
+    if raggio_max_m is not None:
+        fuori = joined["distanza_m"] > float(raggio_max_m)
+        if fuori.any():
+            log.warning(
+                "Semafori scartati oltre il tetto di %.0f m: %d "
+                "(max %.1f m, mediana %.1f m)",
+                raggio_max_m,
+                int(fuori.sum()),
+                float(joined.loc[fuori, "distanza_m"].max()),
+                float(joined.loc[fuori, "distanza_m"].median()),
+            )
+            joined = joined.loc[~fuori]
+
+    # Log di warning per i semafori oltre soglia attesa (entro il tetto).
     oltre = joined.loc[joined["distanza_m"] > raggio_m]
     if len(oltre) > 0:
         log.warning(
@@ -1561,8 +1580,13 @@ def main(config: dict[str, Any]) -> None:
 
     # Associazione semafori.
     raggio_sem = float(config["matching"]["raggio_associazione_semaforo"])
+    raggio_sem_max = config["matching"].get(
+        "raggio_max_associazione_semaforo", 100.0
+    )
     gdf_intersezioni = associa_semafori(
-        gdf_intersezioni, gdf_semafori, raggio_m=raggio_sem
+        gdf_intersezioni, gdf_semafori, raggio_m=raggio_sem,
+        raggio_max_m=(float(raggio_sem_max) if raggio_sem_max is not None
+                      else None),
     )
 
     # Riassunto intersezioni.

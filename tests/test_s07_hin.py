@@ -68,15 +68,28 @@ class TestKsi:
     def test_ksi_km(self, segmenti_sintetici):
         ksi = calcola_ksi(segmenti_sintetici, usa_eb=False)
         ksi_km = calcola_ksi_km(segmenti_sintetici, ksi)
-        # Lunghezza 1 km -> KSI/km == KSI.
+        # Lunghezza 1 km (sopra il floor) -> KSI/km == KSI.
         assert np.allclose(ksi_km, ksi)
+
+    def test_floor_regolarizza_micro_segmenti(self, segmenti_sintetici):
+        """Un KSI su 10 m non deve produrre densita' esplosive: il floor
+        (default 100 m) limita la densita' a KSI/0.1 km."""
+        df = segmenti_sintetici.copy()
+        df.loc[4, "lunghezza_m"] = 10.0     # KSI = 1 su 10 metri
+        ksi = calcola_ksi(df, usa_eb=False)
+        ksi_km = calcola_ksi_km(df, ksi, lunghezza_min_m=100.0)
+        # Senza floor sarebbe 100/km; col floor e' 10/km.
+        assert ksi_km.iloc[4] == pytest.approx(10.0)
+        # Il floor non tocca i segmenti sopra soglia.
+        assert ksi_km.iloc[0] == pytest.approx(10.0)  # 10 KSI su 1 km
 
     def test_lunghezza_zero_non_divide(self, segmenti_sintetici):
         df = segmenti_sintetici.copy()
         df.loc[0, "lunghezza_m"] = 0.0
         ksi = calcola_ksi(df, usa_eb=False)
         ksi_km = calcola_ksi_km(df, ksi)
-        assert ksi_km.iloc[0] == 0.0
+        # Il floor porta il denominatore a 100 m: 10 KSI -> 100/km, finito.
+        assert ksi_km.iloc[0] == pytest.approx(100.0)
         assert np.isfinite(ksi_km).all()
 
 

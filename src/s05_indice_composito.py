@@ -217,9 +217,32 @@ def classifica_fasce(
 
     Soglie default: [20, 40, 60, 80] producono 5 fasce:
     monitoraggio, bassa, media, alta, altissima.
+
+    Distribuzioni degeneri (zero-inflated): quando la maggioranza dei
+    siti ha eccesso nullo, l'ICP concentra la massa su un unico valore e
+    le soglie percentili collassano (verificato su Roma: soglie 20/40/60/
+    80 tutte uguali -> solo 2 fasce). In quel caso la massa (e tutto cio'
+    che sta sotto) va in ``monitoraggio`` e i siti sopra si ripartiscono
+    in 4 fasce sui quartili dei soli valori superiori - coerente con la
+    filosofia zero-inflated della normalizzazione.
     """
     nomi = ["monitoraggio", "bassa", "media", "alta", "altissima"]
     valori_soglia = [np.nanpercentile(icp, p) for p in soglie_percentili]
+
+    if len({round(float(v), 9) for v in valori_soglia}) < len(valori_soglia):
+        base = float(max(valori_soglia))
+        out = pd.Series("monitoraggio", index=icp.index)
+        mask_sopra = icp > base
+        sopra = icp[mask_sopra]
+        if len(sopra) > 0:
+            q = [np.nanpercentile(sopra, p) for p in (25, 50, 75)]
+            out.loc[mask_sopra] = np.select(
+                [sopra <= q[0], sopra <= q[1], sopra <= q[2]],
+                nomi[1:4],
+                default="altissima",
+            )
+        return out
+
     condizioni = [
         icp <= valori_soglia[0],
         icp <= valori_soglia[1],

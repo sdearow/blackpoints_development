@@ -367,3 +367,28 @@ def test_riassumi_priorita_n_siti_corretto():
     out = assembla_priorita(df, "segmento", PESI, SOGLIE, p_min=1.0, p_max=99.0)
     r = riassumi_priorita(out)
     assert r["n_siti"] == 77
+
+
+def test_classifica_fasce_zero_inflated_non_collassa():
+    """Distribuzione degenere (80% della massa su un valore, come l'ICP
+    dei segmenti di Roma): le soglie percentili collassano e senza
+    fallback restano solo 2 fasce. Il fallback deve produrne 5."""
+    rng = np.random.default_rng(42)
+    massa = np.full(800, 24.843)                 # eccesso nullo
+    positivi = 24.843 + rng.uniform(0.1, 75.0, 200)
+    icp = pd.Series(np.concatenate([massa, positivi]))
+    fasce = classifica_fasce(icp, SOGLIE)
+    assert set(fasce.unique()) == {"monitoraggio", "bassa", "media",
+                                   "alta", "altissima"}
+    # Tutta la massa degenere sta in monitoraggio.
+    assert (fasce[icp <= 24.843] == "monitoraggio").all()
+    # I positivi si ripartiscono ~25% per fascia.
+    sopra = fasce[icp > 24.843].value_counts(normalize=True)
+    for f in ("bassa", "media", "alta", "altissima"):
+        assert 0.15 < sopra[f] < 0.35
+
+
+def test_classifica_fasce_tutta_massa_degenere():
+    icp = pd.Series(np.zeros(100))
+    fasce = classifica_fasce(icp, SOGLIE)
+    assert (fasce == "monitoraggio").all()
