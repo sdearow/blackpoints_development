@@ -153,7 +153,10 @@ spf:
   covariate_segmenti_base: ["log_TGM", "log_L"]
   covariate_segmenti_estese: ["log_TGM", "log_L", "V85", "IQR_norm"]
   covariate_intersezioni_base: ["log_flusso_entrante"]
-  covariate_intersezioni_estese: ["log_flusso_entrante", "n_bracci"]
+  # log_flusso_sq (quadratico centrato): corregge la sovra-predizione
+  # nel decile di flusso piu' alto (coda del CURE). Adottato solo se
+  # migliora l'AIC, come le altre covariate estese.
+  covariate_intersezioni_estese: ["log_flusso_entrante", "log_flusso_sq", "n_bracci"]
   # Numero minimo di siti per categoria sotto cui si accorpano le categorie.
   min_siti_per_categoria: 50
   # Anni da usare per il conteggio incidenti nella SPF.

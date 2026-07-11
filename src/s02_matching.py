@@ -702,6 +702,64 @@ def associa_semafori(
     return gdf_out
 
 
+def individua_semafori_isolati(
+    gdf_semafori: gpd.GeoDataFrame,
+    gdf_intersezioni: gpd.GeoDataFrame,
+    raggio_max_m: float,
+) -> gpd.GeoDataFrame:
+    """Impianti veicolari senza un nodo-intersezione entro il tetto.
+
+    Non sono errori di georeferenziazione: nel dato di Roma 119 su 125
+    stanno a <30 m da un segmento (mediana 3.2 m). Sono luoghi
+    semaforizzati che il set di intersezioni non rappresenta -
+    tipicamente attraversamenti semaforizzati a meta' isolato o nodi
+    rimossi dal filtro anti-falsi-incroci. Vengono salvati come layer
+    dedicato e usati per flaggare i segmenti limitrofi
+    (``has_semaforo_isolato``), cosi' da non trattarli come contesto
+    'non semaforizzato' puro nelle analisi.
+    """
+    if "is_veicolare" in gdf_semafori.columns:
+        vei = gdf_semafori.loc[gdf_semafori["is_veicolare"].fillna(False)].copy()
+    else:
+        vei = gdf_semafori.copy()
+    if len(vei) == 0 or len(gdf_intersezioni) == 0:
+        return vei.iloc[0:0]
+
+    joined = gpd.sjoin_nearest(
+        vei[["id_impianto", "geometry"]],
+        gdf_intersezioni[["id_nodo", "geometry"]],
+        how="left",
+        distance_col="distanza_m",
+    )
+    joined = joined[~joined.index.duplicated(keep="first")]
+    isolati = vei.loc[joined.index[joined["distanza_m"] > float(raggio_max_m)]].copy()
+    isolati["distanza_nodo_m"] = joined.loc[isolati.index, "distanza_m"].round(1)
+    log.info("Semafori isolati (nessun nodo entro %.0f m): %d",
+             raggio_max_m, len(isolati))
+    return isolati
+
+
+def flagga_segmenti_con_semaforo_isolato(
+    gdf_segmenti: gpd.GeoDataFrame,
+    gdf_isolati: gpd.GeoDataFrame,
+    raggio_m: float = 30.0,
+) -> pd.Series:
+    """Flag ``has_semaforo_isolato`` per i segmenti entro ``raggio_m``
+    da un semaforo isolato (attraversamento semaforizzato sul segmento)."""
+    flag = pd.Series(False, index=gdf_segmenti.index)
+    if len(gdf_isolati) == 0:
+        return flag
+    buffer = gdf_isolati[["geometry"]].copy()
+    buffer["geometry"] = buffer.geometry.buffer(float(raggio_m))
+    join = gpd.sjoin(
+        gdf_segmenti[["geometry"]], buffer, predicate="intersects", how="inner"
+    )
+    flag.loc[join.index.unique()] = True
+    log.info("Segmenti con semaforo isolato entro %.0f m: %d",
+             raggio_m, int(flag.sum()))
+    return flag
+
+
 # ---------------------------------------------------------------------------
 # Riassunto e salvataggio
 # ---------------------------------------------------------------------------
@@ -1614,6 +1672,25 @@ def main(config: dict[str, Any]) -> None:
         lung_max=lung_max,
         id_nodi_intersezione=id_nodi_int,
     )
+
+    # Semafori isolati: impianti veri senza nodo entro il tetto
+    # (attraversamenti semaforizzati a meta' isolato, nodi filtrati).
+    if raggio_sem_max is not None:
+        gdf_isolati = individua_semafori_isolati(
+            gdf_semafori, gdf_intersezioni, raggio_max_m=float(raggio_sem_max)
+        )
+        gdf_segmenti["has_semaforo_isolato"] = flagga_segmenti_con_semaforo_isolato(
+            gdf_segmenti, gdf_isolati
+        )
+        if len(gdf_isolati):
+            out_isolati = out_int_path.parent / "semafori_isolati.gpkg"
+            if out_isolati.exists():
+                out_isolati.unlink()
+            gdf_isolati.to_file(out_isolati, driver="GPKG",
+                                layer="semafori_isolati")
+            log.info("Salvato %s (%d impianti)", out_isolati, len(gdf_isolati))
+    else:
+        gdf_segmenti["has_semaforo_isolato"] = False
 
     # Riassunto segmenti.
     riassunto_seg = riassumi_segmenti(gdf_segmenti)

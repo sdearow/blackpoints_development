@@ -199,6 +199,14 @@ def prepara_dataset_intersezioni(
     df["n_anni"] = float(n_anni)
     df["log_n_anni"] = np.log(float(n_anni))
     df["log_flusso_entrante"] = np.log(df["flusso_entrante"].clip(lower=1e-6))
+    # Termine quadratico centrato sul log-flusso: la forma log-lineare
+    # sovra-predice sistematicamente nel decile piu' alto di flusso
+    # (O/E = 0.64 sulle non semaforizzate di Roma), sottostimando
+    # l'eccesso dei grandi nodi. Il centraggio riduce la collinearita'
+    # col termine lineare. Entra nel modello esteso via config e viene
+    # adottato solo se migliora l'AIC.
+    log_f = df["log_flusso_entrante"]
+    df["log_flusso_sq"] = (log_f - float(log_f.mean())) ** 2
     df["n_bracci"] = df["n_archi"]
 
     mask_valido = df["flusso_entrante"] > 0
