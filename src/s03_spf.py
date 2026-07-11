@@ -673,13 +673,17 @@ def main(config: dict[str, Any]) -> None:
 
     # --- Task 2.2: calibrazione modelli ---
     log.info("=== Task 2.2: calibrazione SPF segmenti ===")
-    covariate_seg = ["log_tgm", "log_lunghezza"]
+    covariate_seg = list(config.get("spf", {}).get(
+        "covariate_segmenti_base", ["log_tgm", "log_lunghezza"]
+    ))
     risultati_seg = calibra_nb2_per_categoria(
         df_seg, "categoria_spf", covariate_seg
     )
 
     log.info("=== Task 2.2: calibrazione SPF intersezioni ===")
-    covariate_int = ["log_flusso_entrante"]
+    covariate_int = list(config.get("spf", {}).get(
+        "covariate_intersezioni_base", ["log_flusso_entrante"]
+    ))
     risultati_int = calibra_nb2_per_categoria(
         df_int, "categoria_spf", covariate_int
     )
@@ -688,7 +692,12 @@ def main(config: dict[str, Any]) -> None:
     # del modello esteso (il base viene rifittato escludendo le righe con NaN
     # nelle covariate estese, altrimenti l'AIC non e' confrontabile).
     log.info("=== Modelli estesi segmenti ===")
-    covariate_estese_seg = ["log_tgm", "log_lunghezza", "v85_medio", "iqr_velocita_medio"]
+    # Le liste vengono dal config (prima erano hardcoded e le chiavi
+    # spf.covariate_*_estese erano decorative).
+    covariate_estese_seg = list(config.get("spf", {}).get(
+        "covariate_segmenti_estese",
+        ["log_tgm", "log_lunghezza", "v85_medio", "iqr_velocita_medio"],
+    ))
     risultati_seg_ext = calibra_nb2_per_categoria(
         df_seg, "categoria_spf", covariate_estese_seg
     )
@@ -713,7 +722,10 @@ def main(config: dict[str, Any]) -> None:
             risultati_seg[cat] = r_ext
 
     log.info("=== Modelli estesi intersezioni ===")
-    covariate_estese_int = ["log_flusso_entrante", "n_bracci"]
+    covariate_estese_int = list(config.get("spf", {}).get(
+        "covariate_intersezioni_estese",
+        ["log_flusso_entrante", "n_bracci"],
+    ))
     risultati_int_ext = calibra_nb2_per_categoria(
         df_int, "categoria_spf", covariate_estese_int
     )

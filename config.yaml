@@ -150,8 +150,10 @@ matching:
 spf:
   modello_segmenti: "NB2"     # binomiale negativa
   modello_intersezioni: "NB2"
-  covariate_segmenti_base: ["log_TGM", "log_L"]
-  covariate_segmenti_estese: ["log_TGM", "log_L", "V85", "IQR_norm"]
+  # NB: nomi di colonna REALI dei dataset di regressione (s03), non
+  # quelli simbolici del piano originale.
+  covariate_segmenti_base: ["log_tgm", "log_lunghezza"]
+  covariate_segmenti_estese: ["log_tgm", "log_lunghezza", "v85_medio", "iqr_velocita_medio"]
   covariate_intersezioni_base: ["log_flusso_entrante"]
   # log_flusso_sq (quadratico centrato): corregge la sovra-predizione
   # nel decile di flusso piu' alto (coda del CURE). Adottato solo se
