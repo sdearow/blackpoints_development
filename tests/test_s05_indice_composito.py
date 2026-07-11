@@ -392,3 +392,20 @@ def test_classifica_fasce_tutta_massa_degenere():
     icp = pd.Series(np.zeros(100))
     fasce = classifica_fasce(icp, SOGLIE)
     assert (fasce == "monitoraggio").all()
+
+
+def test_classifica_fasce_pareggio_parziale_non_cambia_regime():
+    """Pareggio parziale delle soglie (P20=P40, P60/P80 distinti):
+    il percorso unico deve degradare con continuita', non buttare tutto
+    cio' che sta sotto P80 in monitoraggio (bug del vecchio fallback)."""
+    rng = np.random.default_rng(7)
+    # 40% massa a 5.0 (P20 = P40 = 5), 60% continua sopra.
+    icp = pd.Series(np.concatenate([np.full(400, 5.0),
+                                    5.0 + rng.uniform(0.1, 95.0, 600)]))
+    fasce = classifica_fasce(icp, SOGLIE)
+    # La massa sta in monitoraggio, ma NON la maggioranza dei positivi.
+    assert (fasce[icp <= 5.0] == "monitoraggio").all()
+    quota_monitoraggio = (fasce == "monitoraggio").mean()
+    assert quota_monitoraggio < 0.5   # il vecchio fallback dava ~0.8
+    assert set(fasce.unique()) == {"monitoraggio", "bassa", "media",
+                                   "alta", "altissima"}

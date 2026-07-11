@@ -54,29 +54,37 @@ def _extract_line_coords(geom) -> list[tuple[float, float]]:
 def _carica_dati(gpkg_path: Path) -> pd.DataFrame:
     """Carica segmenti e intersezioni, calcola centroidi/coordinate e unisce.
 
-    Se il GeoPackage non esiste, tenta il fallback sui GeoJSON in
-    data/processed/segmenti.geojson e intersezioni.geojson.
+    Se il GeoPackage non esiste, fallback in ordine su:
+    1. i GeoJSON piani in data/processed/ (prodotti da s06 in locale);
+    2. i GeoJSON compressi .geojson.gz (gli unici versionati in git:
+       un clone pulito senza pipeline eseguita ha solo quelli).
     """
     processed = gpkg_path.parent
 
     geojson_seg = processed / "segmenti.geojson"
     geojson_int = processed / "intersezioni.geojson"
 
-    if not gpkg_path.exists():
-        if geojson_seg.exists() and geojson_int.exists():
-            log.info("GeoPackage non trovato, carico dai GeoJSON...")
-            gdf_seg = gpd.read_file(geojson_seg)
-            gdf_int = gpd.read_file(geojson_int)
-        else:
-            raise FileNotFoundError(
-                f"Nessun dato trovato. Attesi:\n"
-                f"  {gpkg_path}\noppure:\n"
-                f"  {geojson_seg}\n  {geojson_int}"
-            )
-    else:
+    if gpkg_path.exists():
         log.info("Caricamento dati da %s", gpkg_path)
         gdf_seg = gpd.read_file(gpkg_path, layer="segmenti")
         gdf_int = gpd.read_file(gpkg_path, layer="intersezioni")
+    elif geojson_seg.exists() and geojson_int.exists():
+        log.info("GeoPackage non trovato, carico dai GeoJSON...")
+        gdf_seg = gpd.read_file(geojson_seg)
+        gdf_int = gpd.read_file(geojson_int)
+    elif (geojson_seg.with_suffix(".geojson.gz").exists()
+          and geojson_int.with_suffix(".geojson.gz").exists()):
+        log.info("Carico dai GeoJSON compressi versionati (/vsigzip/)...")
+        gdf_seg = gpd.read_file(
+            f"/vsigzip/{geojson_seg.with_suffix('.geojson.gz')}")
+        gdf_int = gpd.read_file(
+            f"/vsigzip/{geojson_int.with_suffix('.geojson.gz')}")
+    else:
+        raise FileNotFoundError(
+            f"Nessun dato trovato. Attesi:\n"
+            f"  {gpkg_path}\noppure:\n"
+            f"  {geojson_seg}[.gz]\n  {geojson_int}[.gz]"
+        )
 
     _wgs = "EPSG:4326"
 

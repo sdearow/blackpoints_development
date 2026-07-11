@@ -159,10 +159,13 @@ def applica_date(
     override dal CSV ``date_interventi.csv`` dove presente.
 
     Il CSV di override ha colonne ``id_intervento``, ``data_attivazione``
-    (ISO, anche futura per i progetti non attuati) e opzionale ``fase``.
+    (ISO, anche futura per i progetti non attuati) e opzionali ``fase``
+    e ``data_fine`` (fine lavori: il before-after fa partire il "dopo"
+    da qui, escludendo il periodo di cantiere).
     """
     gdf = gdf.copy()
     gdf["data_attivazione"] = pd.Timestamp(data_placeholder)
+    gdf["data_fine"] = pd.NaT
     gdf["data_stato"] = "placeholder"
 
     if percorso_override is None or not percorso_override.exists():
@@ -170,6 +173,8 @@ def applica_date(
 
     ov = pd.read_csv(percorso_override, dtype={"id_intervento": str})
     ov["data_attivazione"] = pd.to_datetime(ov["data_attivazione"], errors="raise")
+    if "data_fine" in ov.columns:
+        ov["data_fine"] = pd.to_datetime(ov["data_fine"], errors="raise")
     sconosciuti = set(ov["id_intervento"]) - set(gdf["id_intervento"])
     if sconosciuti:
         log.warning(
@@ -184,6 +189,13 @@ def applica_date(
         pos = posizioni[riga["id_intervento"]]
         gdf.iloc[pos, gdf.columns.get_loc("data_attivazione")] = riga["data_attivazione"]
         gdf.iloc[pos, gdf.columns.get_loc("data_stato")] = "confermata"
+        if "data_fine" in ov.columns and pd.notna(riga.get("data_fine")):
+            if riga["data_fine"] < riga["data_attivazione"]:
+                raise ValueError(
+                    f"data_fine precedente a data_attivazione per "
+                    f"{riga['id_intervento']}"
+                )
+            gdf.iloc[pos, gdf.columns.get_loc("data_fine")] = riga["data_fine"]
         if "fase" in ov.columns and pd.notna(riga.get("fase")):
             if riga["fase"] not in FASI_VALIDE:
                 raise ValueError(f"fase non valida nel CSV date: {riga['fase']}")
@@ -223,7 +235,8 @@ def esporta_template_date(gdf: gpd.GeoDataFrame, percorso: Path) -> None:
     """Template CSV da compilare con le date reali (anche future)."""
     tpl = gdf[["id_intervento", "tipo", "nome", "fase", "fase_orig",
                "data_stato"]].copy()
-    tpl["data_attivazione"] = ""  # da compilare
+    tpl["data_attivazione"] = ""  # da compilare (inizio lavori/attivazione)
+    tpl["data_fine"] = ""         # opzionale: fine lavori (esclude il cantiere)
     percorso.parent.mkdir(parents=True, exist_ok=True)
     tpl.to_csv(percorso, index=False)
     log.info("Template date: %s (%d righe)", percorso, len(tpl))

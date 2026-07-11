@@ -221,3 +221,35 @@ class TestValutaInterventi:
         )
         assert not out.iloc[0]["valutabile"]
         assert out.iloc[0]["motivo"] == "nessun_sito_trattato"
+
+
+class TestDataFine:
+    def test_cantiere_escluso_dal_dopo(self):
+        """Con data_fine, il 'dopo' parte dalla fine lavori: il periodo
+        di cantiere non entra in nessuna finestra."""
+        fin = finestre_temporali(
+            pd.Timestamp("2020-01-01"),          # inizio lavori
+            data_min=pd.Timestamp("2015-01-01"),
+            data_max=pd.Timestamp("2024-01-01"),
+            n_anni_pre=3, n_anni_post=2,
+            data_fine=pd.Timestamp("2020-07-01"),  # 6 mesi di cantiere
+        )
+        assert fin["pre_fine"] == pd.Timestamp("2020-01-01")
+        assert fin["post_inizio"] == pd.Timestamp("2020-07-01")
+        assert fin["anni_post_eff"] == pytest.approx(2.0, abs=0.01)
+
+    def test_data_fine_assente_equivale_ad_attivazione(self):
+        a = finestre_temporali(
+            pd.Timestamp("2020-01-01"), pd.Timestamp("2015-01-01"),
+            pd.Timestamp("2024-01-01"), 3, 2)
+        b = finestre_temporali(
+            pd.Timestamp("2020-01-01"), pd.Timestamp("2015-01-01"),
+            pd.Timestamp("2024-01-01"), 3, 2, data_fine=pd.NaT)
+        assert a == b
+
+    def test_data_fine_precedente_errore(self):
+        with pytest.raises(ValueError):
+            finestre_temporali(
+                pd.Timestamp("2020-01-01"), pd.Timestamp("2015-01-01"),
+                pd.Timestamp("2024-01-01"), 3, 2,
+                data_fine=pd.Timestamp("2019-01-01"))

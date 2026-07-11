@@ -93,20 +93,33 @@ def finestre_temporali(
     data_max: pd.Timestamp,
     n_anni_pre: float,
     n_anni_post: float,
+    data_fine: pd.Timestamp | None = None,
 ) -> dict[str, Any]:
     """Finestre prima/dopo troncate sulla disponibilita' dei dati.
 
     - prima: [attivazione - n_anni_pre, attivazione)
-    - dopo:  [attivazione, attivazione + n_anni_post)
-    Il periodo lavori (data_fine) andra' escluso quando disponibile.
+    - dopo:  [inizio_post, inizio_post + n_anni_post) dove inizio_post
+      e' ``data_fine`` (fine lavori) se disponibile, altrimenti
+      l'attivazione: il periodo di cantiere - viabilita' alterata,
+      incidentalita' anomala - resta cosi' fuori da entrambe le finestre
+      (convenzione standard del before-after di Hauer).
     Ritorna anche gli anni *effettivi* (dopo il troncamento), usati per
     scalare le predizioni SPF.
     """
     att = pd.Timestamp(data_attivazione)
+    fine_lavori = (
+        pd.Timestamp(data_fine)
+        if data_fine is not None and pd.notna(data_fine)
+        else att
+    )
+    if fine_lavori < att:
+        raise ValueError("data_fine precedente a data_attivazione")
     pre_inizio = max(att - pd.DateOffset(years=int(n_anni_pre)), data_min)
     pre_fine = att
-    post_inizio = att
-    post_fine = min(att + pd.DateOffset(years=int(n_anni_post)), data_max)
+    post_inizio = fine_lavori
+    post_fine = min(
+        fine_lavori + pd.DateOffset(years=int(n_anni_post)), data_max
+    )
 
     anni_pre = max((pre_fine - pre_inizio).days, 0) / 365.25
     anni_post = max((post_fine - post_inizio).days, 0) / 365.25
@@ -250,6 +263,7 @@ def valuta_interventi(
         fin = finestre_temporali(
             interv["data_attivazione"], data_min, data_max,
             cfg["n_anni_pre"], cfg["n_anni_post"],
+            data_fine=interv.get("data_fine"),
         )
         riga.update({k: fin[k] for k in ("anni_pre_eff", "anni_post_eff")})
 
@@ -328,6 +342,10 @@ def main(config: dict[str, Any]) -> None:
         layer="interventi",
     )
     interventi["data_attivazione"] = pd.to_datetime(interventi["data_attivazione"])
+    if "data_fine" in interventi.columns:
+        interventi["data_fine"] = pd.to_datetime(
+            interventi["data_fine"], errors="coerce"
+        )
 
     prio = RADICE_PROGETTO / config["paths"]["processed"]["priorita_finale"]
     segmenti = gpd.read_file(prio, layer="segmenti")

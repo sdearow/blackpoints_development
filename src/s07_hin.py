@@ -473,10 +473,18 @@ def main(config: dict[str, Any]) -> None:
         log.info("NKDE lixel: %s (%d record)", nkde_path, len(gdf_lixel))
 
     # --- Riscrittura priorita_finale con le nuove colonne ------------
-    if prio_path.exists():
-        prio_path.unlink()
-    gdf_seg.to_file(prio_path, driver="GPKG", layer="segmenti")
-    gdf_int.to_file(prio_path, driver="GPKG", layer="intersezioni")
+    # Scrittura atomica: si scrive su file temporaneo e si sostituisce
+    # con os.replace solo a scrittura completata. Prima si faceva
+    # unlink + to_file: un crash nel mezzo distruggeva l'output di s05
+    # (non il nostro), costringendo a rieseguire lo step a monte.
+    import os
+
+    prio_tmp = prio_path.with_name(prio_path.name + ".tmp")
+    if prio_tmp.exists():
+        prio_tmp.unlink()
+    gdf_seg.to_file(prio_tmp, driver="GPKG", layer="segmenti")
+    gdf_int.to_file(prio_tmp, driver="GPKG", layer="intersezioni")
+    os.replace(prio_tmp, prio_path)
     log.info("Aggiornato %s (colonne ksi_km, is_hin, rank_ksi, nkde_max)", prio_path)
 
 
