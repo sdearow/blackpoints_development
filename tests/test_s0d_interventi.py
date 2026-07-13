@@ -184,3 +184,27 @@ class TestRaggioInfluenza:
         assert r["n_interventi"] == 2
         assert r["per_tipo"] == {"velox": 2}
         assert r["date_confermate"] == 1
+
+
+class TestDataFineOverride:
+    def test_override_con_data_fine(self, tmp_path):
+        gdf = gpd.GeoDataFrame(
+            {"id_intervento": ["A:0000"], "fase": ["da_definire"],
+             "geometry": [Point(0, 0)]}, crs=CRS)
+        csv = tmp_path / "date.csv"
+        csv.write_text(
+            "id_intervento,data_attivazione,data_fine\n"
+            "A:0000,2021-03-01,2021-09-15\n")
+        out = applica_date(gdf, "2025-01-01", csv)
+        assert out.loc[0, "data_fine"] == pd.Timestamp("2021-09-15")
+
+    def test_data_fine_incoerente_errore(self, tmp_path):
+        gdf = gpd.GeoDataFrame(
+            {"id_intervento": ["A:0000"], "fase": ["da_definire"],
+             "geometry": [Point(0, 0)]}, crs=CRS)
+        csv = tmp_path / "date.csv"
+        csv.write_text(
+            "id_intervento,data_attivazione,data_fine\n"
+            "A:0000,2021-03-01,2020-01-01\n")
+        with pytest.raises(ValueError):
+            applica_date(gdf, "2025-01-01", csv)

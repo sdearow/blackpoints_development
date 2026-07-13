@@ -349,22 +349,37 @@ def _gdf_semafori_finto_per_associazione() -> gpd.GeoDataFrame:
     )
 
 
-def test_associa_semafori_scelta_C_sempre_al_piu_vicino():
+def test_associa_semafori_al_piu_vicino_entro_il_tetto():
     gdf_int = _gdf_intersezioni_finto()
     gdf_sem = _gdf_semafori_finto_per_associazione()
 
-    out = associa_semafori(gdf_int, gdf_sem, raggio_m=20.0)
+    out = associa_semafori(gdf_int, gdf_sem, raggio_m=20.0, raggio_max_m=100.0)
 
     # Tutti e 3 i nodi hanno almeno un semaforo veicolare associato.
     # - nodo 10 <- S1 (dist 0)
     # - nodo 20 <- S2 (dist ~11)
-    # - nodo 30 <- S3 (dist 50, oltre soglia ma comunque associato - scelta C)
+    # - nodo 30 <- S3 (dist 50: oltre la soglia attesa ma entro il tetto)
     assert out["is_semaforizzata"].tolist() == [True, True, True]
     assert out["n_semafori"].tolist() == [1, 1, 1]
 
     # Il semaforo pedonale (S4) non e' stato associato.
     tutti_id = sum(out["id_impianti"].tolist(), [])
     assert "S4" not in tutti_id
+
+
+def test_associa_semafori_scarta_oltre_il_tetto():
+    """Un semaforo oltre raggio_max_m non semaforizza il nodo (nel dato
+    reale il nearest-node senza tetto associava fino a 1.554 m)."""
+    gdf_int = _gdf_intersezioni_finto()
+    gdf_sem = _gdf_semafori_finto_per_associazione()
+
+    # Tetto stretto (40 m): S3 (dist 50 dal nodo 30) viene scartato.
+    out = associa_semafori(gdf_int, gdf_sem, raggio_m=20.0, raggio_max_m=40.0)
+    assert out["is_semaforizzata"].tolist() == [True, True, False]
+
+    # Senza tetto (None): comportamento storico, S3 associato.
+    out_no = associa_semafori(gdf_int, gdf_sem, raggio_m=20.0, raggio_max_m=None)
+    assert out_no["is_semaforizzata"].tolist() == [True, True, True]
 
 
 def test_associa_semafori_senza_veicolari_nessuna_semaforizzazione():
@@ -796,3 +811,36 @@ def test_riassumi_matching_conta_tipi():
     assert r["n_segmento"] == 1
     assert r["n_segmento_toponimo"] == 1
     assert r["n_non_abbinato"] == 1
+
+
+def test_individua_semafori_isolati_e_flag_segmenti():
+    """Un impianto veicolare senza nodo entro il tetto e' 'isolato' e
+    flagga i segmenti entro 30 m (attraversamento semaforizzato)."""
+    from src.s02_matching import (
+        flagga_segmenti_con_semaforo_isolato,
+        individua_semafori_isolati,
+    )
+
+    gdf_int = _gdf_intersezioni_finto()          # nodi a x=0,100,200
+    gdf_sem = gpd.GeoDataFrame(
+        {
+            "id_impianto": ["VICINO", "ISOLATO"],
+            "is_veicolare": pd.array([True, True], dtype="boolean"),
+        },
+        geometry=[Point(0, 5), Point(600, 0)],   # 5 m e 400 m dal nodo
+        crs="EPSG:32633",
+    )
+    isolati = individua_semafori_isolati(gdf_sem, gdf_int, raggio_max_m=100.0)
+    assert list(isolati["id_impianto"]) == ["ISOLATO"]
+    assert isolati["distanza_nodo_m"].iloc[0] == pytest.approx(400.0)
+
+    segmenti = gpd.GeoDataFrame(
+        {"id_segmento": [1, 2]},
+        geometry=[
+            LineString([(580, 0), (700, 0)]),    # passa accanto all'isolato
+            LineString([(0, 100), (0, 200)]),    # lontano
+        ],
+        crs="EPSG:32633",
+    )
+    flag = flagga_segmenti_con_semaforo_isolato(segmenti, isolati, raggio_m=30.0)
+    assert flag.tolist() == [True, False]

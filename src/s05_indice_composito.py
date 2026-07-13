@@ -217,19 +217,44 @@ def classifica_fasce(
 
     Soglie default: [20, 40, 60, 80] producono 5 fasce:
     monitoraggio, bassa, media, alta, altissima.
+
+    Algoritmo a percorso unico, robusto allo zero-inflation:
+    1. ``monitoraggio`` = tutto cio' che sta al di sotto (o pari) della
+       prima soglia percentile;
+    2. i valori sopra si ripartiscono nelle 4 fasce superiori sulle
+       soglie percentili *riscalate* della sola sotto-distribuzione
+       superiore (per le soglie default: i suoi quartili 25/50/75).
+
+    Per una distribuzione continua e' equivalente alla classificazione
+    diretta sui percentili (i quartili di cio' che supera P20 SONO
+    P40/P60/P80). Per distribuzioni degeneri (massa dominante su un
+    valore, tipica dell'ICP zero-inflated: verificato su Roma con le
+    soglie 20/40/60/80 tutte coincidenti) degrada con continuita'
+    invece di collassare a 2 fasce o - peggio - cambiare regime su un
+    pareggio parziale delle soglie.
     """
     nomi = ["monitoraggio", "bassa", "media", "alta", "altissima"]
-    valori_soglia = [np.nanpercentile(icp, p) for p in soglie_percentili]
-    condizioni = [
-        icp <= valori_soglia[0],
-        icp <= valori_soglia[1],
-        icp <= valori_soglia[2],
-        icp <= valori_soglia[3],
+    p0 = float(soglie_percentili[0])
+    soglia0 = float(np.nanpercentile(icp, p0))
+
+    out = pd.Series(nomi[0], index=icp.index)
+    mask_sopra = icp > soglia0
+    sopra = icp[mask_sopra]
+    if len(sopra) == 0:
+        return out
+
+    # Percentili delle soglie rimanenti riscalati sulla parte superiore:
+    # (p - p0) / (100 - p0) * 100. Con [20,40,60,80] -> [25, 50, 75].
+    p_riscalati = [
+        (float(p) - p0) / (100.0 - p0) * 100.0 for p in soglie_percentili[1:]
     ]
-    return pd.Series(
-        np.select(condizioni, nomi[:4], default="altissima"),
-        index=icp.index,
+    q = [np.nanpercentile(sopra, p) for p in p_riscalati]
+    out.loc[mask_sopra] = np.select(
+        [sopra <= q[0], sopra <= q[1], sopra <= q[2]],
+        nomi[1:4],
+        default="altissima",
     )
+    return out
 
 
 # =====================================================================

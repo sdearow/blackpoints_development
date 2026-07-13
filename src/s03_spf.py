@@ -199,6 +199,14 @@ def prepara_dataset_intersezioni(
     df["n_anni"] = float(n_anni)
     df["log_n_anni"] = np.log(float(n_anni))
     df["log_flusso_entrante"] = np.log(df["flusso_entrante"].clip(lower=1e-6))
+    # Termine quadratico centrato sul log-flusso: la forma log-lineare
+    # sovra-predice sistematicamente nel decile piu' alto di flusso
+    # (O/E = 0.64 sulle non semaforizzate di Roma), sottostimando
+    # l'eccesso dei grandi nodi. Il centraggio riduce la collinearita'
+    # col termine lineare. Entra nel modello esteso via config e viene
+    # adottato solo se migliora l'AIC.
+    log_f = df["log_flusso_entrante"]
+    df["log_flusso_sq"] = (log_f - float(log_f.mean())) ** 2
     df["n_bracci"] = df["n_archi"]
 
     mask_valido = df["flusso_entrante"] > 0
@@ -665,13 +673,17 @@ def main(config: dict[str, Any]) -> None:
 
     # --- Task 2.2: calibrazione modelli ---
     log.info("=== Task 2.2: calibrazione SPF segmenti ===")
-    covariate_seg = ["log_tgm", "log_lunghezza"]
+    covariate_seg = list(config.get("spf", {}).get(
+        "covariate_segmenti_base", ["log_tgm", "log_lunghezza"]
+    ))
     risultati_seg = calibra_nb2_per_categoria(
         df_seg, "categoria_spf", covariate_seg
     )
 
     log.info("=== Task 2.2: calibrazione SPF intersezioni ===")
-    covariate_int = ["log_flusso_entrante"]
+    covariate_int = list(config.get("spf", {}).get(
+        "covariate_intersezioni_base", ["log_flusso_entrante"]
+    ))
     risultati_int = calibra_nb2_per_categoria(
         df_int, "categoria_spf", covariate_int
     )
@@ -680,7 +692,12 @@ def main(config: dict[str, Any]) -> None:
     # del modello esteso (il base viene rifittato escludendo le righe con NaN
     # nelle covariate estese, altrimenti l'AIC non e' confrontabile).
     log.info("=== Modelli estesi segmenti ===")
-    covariate_estese_seg = ["log_tgm", "log_lunghezza", "v85_medio", "iqr_velocita_medio"]
+    # Le liste vengono dal config (prima erano hardcoded e le chiavi
+    # spf.covariate_*_estese erano decorative).
+    covariate_estese_seg = list(config.get("spf", {}).get(
+        "covariate_segmenti_estese",
+        ["log_tgm", "log_lunghezza", "v85_medio", "iqr_velocita_medio"],
+    ))
     risultati_seg_ext = calibra_nb2_per_categoria(
         df_seg, "categoria_spf", covariate_estese_seg
     )
@@ -705,7 +722,10 @@ def main(config: dict[str, Any]) -> None:
             risultati_seg[cat] = r_ext
 
     log.info("=== Modelli estesi intersezioni ===")
-    covariate_estese_int = ["log_flusso_entrante", "n_bracci"]
+    covariate_estese_int = list(config.get("spf", {}).get(
+        "covariate_intersezioni_estese",
+        ["log_flusso_entrante", "n_bracci"],
+    ))
     risultati_int_ext = calibra_nb2_per_categoria(
         df_int, "categoria_spf", covariate_estese_int
     )

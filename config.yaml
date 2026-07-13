@@ -130,9 +130,13 @@ matching:
   # Lunghezze min/max per i segmenti omogenei (metri).
   lunghezza_min_segmento: 100
   lunghezza_max_segmento: 2000
-  # Distanza massima entro cui un semaforo viene associato a un nodo
-  # come "intersezione semaforizzata" (metri).
+  # Distanza attesa entro cui un semaforo viene associato a un nodo
+  # come "intersezione semaforizzata" (metri); oltre viene loggato.
   raggio_associazione_semaforo: 20
+  # Tetto oltre il quale l'associazione viene scartata (metri): nel dato
+  # reale il nearest-node produceva associazioni fino a 1.554 m che
+  # misclassificavano nodi nella SPF 'semaforizzata'. null = nessun tetto.
+  raggio_max_associazione_semaforo: 100
   # Distanza massima (metri, CRS metrico) entro cui il midpoint di un arco
   # TomTom viene associato a un arco del grafo PGTU 2026 per ereditarne la
   # classifica funzionale, il flag di grande viabilita' e il flag TPL.
@@ -146,10 +150,15 @@ matching:
 spf:
   modello_segmenti: "NB2"     # binomiale negativa
   modello_intersezioni: "NB2"
-  covariate_segmenti_base: ["log_TGM", "log_L"]
-  covariate_segmenti_estese: ["log_TGM", "log_L", "V85", "IQR_norm"]
+  # NB: nomi di colonna REALI dei dataset di regressione (s03), non
+  # quelli simbolici del piano originale.
+  covariate_segmenti_base: ["log_tgm", "log_lunghezza"]
+  covariate_segmenti_estese: ["log_tgm", "log_lunghezza", "v85_medio", "iqr_velocita_medio"]
   covariate_intersezioni_base: ["log_flusso_entrante"]
-  covariate_intersezioni_estese: ["log_flusso_entrante", "n_bracci"]
+  # log_flusso_sq (quadratico centrato): corregge la sovra-predizione
+  # nel decile di flusso piu' alto (coda del CURE). Adottato solo se
+  # migliora l'AIC, come le altre covariate estese.
+  covariate_intersezioni_estese: ["log_flusso_entrante", "log_flusso_sq", "n_bracci"]
   # Numero minimo di siti per categoria sotto cui si accorpano le categorie.
   min_siti_per_categoria: 50
   # Anni da usare per il conteggio incidenti nella SPF.
@@ -280,6 +289,10 @@ interventi:
 hin:
   # Quota di KSI (morti + feriti) che la HIN deve coprire.
   soglia_copertura: 0.70
+  # Floor (metri) sulla lunghezza al denominatore della densita' KSI/km:
+  # regolarizza i micro-segmenti (74% della rete e' sotto i 100 m) senza
+  # escluderli, evitando densita' esplosive da denominatori minuscoli.
+  lunghezza_min_densita_m: 100
   # Se true, stabilizza la conta KSI con la stima EB (KSI * EB_i/O_i):
   # ranking piu' robusto agli eventi rari.
   usa_eb: true
